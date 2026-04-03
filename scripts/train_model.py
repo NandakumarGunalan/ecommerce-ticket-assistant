@@ -3,12 +3,13 @@ import mlflow.sklearn
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
 
 import pandas as pd
 
 # Set MLflow tracking (IMPORTANT)
-mlflow.set_tracking_uri("http://127.0.0.1:5001")
-mlflow.set_experiment("ecommerce-ticket-assistant")
+mlflow.set_tracking_uri("http://34.58.78.78:5000")
+mlflow.set_experiment("placeholder-model")
 
 # Dummy dataset (for demo)
 data = [
@@ -20,23 +21,21 @@ data = [
 
 df = pd.DataFrame(data, columns=["text", "label"])
 
-# Vectorize
-vectorizer = TfidfVectorizer()
-X = vectorizer.fit_transform(df["text"])
+X = df["text"]
 y = df["label"]
 
-# Train model
-model = LogisticRegression()
-model.fit(X, y)
-
-# Wrap pipeline
-from sklearn.pipeline import Pipeline
-
+# Build and fit pipeline
 pipeline = Pipeline([
-    ("tfidf", vectorizer),
-    ("clf", model)
+    ("tfidf", TfidfVectorizer()),
+    ("clf", LogisticRegression())
 ])
 
-# MLflow logging
+pipeline.fit(X, y)
+
+# Log + register pipeline model
 with mlflow.start_run():
-    mlflow.sklearn.log_model(pipeline, "model")
+    mlflow.sklearn.log_model(
+        sk_model=pipeline,
+        artifact_path="model",
+        registered_model_name="ecommerce-ticket-model"
+    )
