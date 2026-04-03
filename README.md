@@ -14,7 +14,7 @@ The goal is to simulate a real-world ML pipeline where models are trained, regis
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 
 User Request → FastAPI (Docker) → MLflow Model Registry → Prediction Response
@@ -28,7 +28,7 @@ Key components:
 
 ---
 
-## ⚙️ Tech Stack
+## Tech Stack
 
 - Python 3.12  
 - scikit-learn  
@@ -39,7 +39,7 @@ Key components:
 
 ---
 
-## 📦 Project Structure
+##  Project Structure
 
 
 ecommerce-ticket-assistant/
@@ -58,7 +58,7 @@ ecommerce-ticket-assistant/
 
 ---
 
-## 🚀 Model Training
+##  Model Training
 
 The training pipeline:
 - Uses a TF-IDF + Logistic Regression pipeline  
@@ -75,7 +75,7 @@ This will:
 Log a run to MLflow
 Register a new version under:
 ecommerce-ticket-model
-🧠 Model Design
+ Model Design
 
 The model is implemented as a scikit-learn Pipeline:
 
@@ -86,7 +86,7 @@ This ensures:
 
 Consistent preprocessing between training and inference
 Simpler deployment (single serialized artifact)
-🔁 Model Registry
+ Model Registry
 
 The model is loaded in the API using:
 
@@ -97,7 +97,7 @@ This allows:
 Version-controlled deployment
 Easy rollback or promotion of models
 Decoupling training from serving
-🌐 Inference API
+Inference API
 POST /predict
 
 Request:
@@ -114,7 +114,7 @@ Response:
   "confidence": 0.9,
   "model_version": "v3"
 }
-🐳 Docker Deployment
+ Docker Deployment
 
 Build image:
 
@@ -127,14 +127,14 @@ docker run -p 8001:8000 ecommerce-ticket-assistant
 Access API:
 
 http://127.0.0.1:8001/docs
-🧪 Testing
+ Testing
 
 Example using curl:
 
 curl -X POST "http://127.0.0.1:8001/predict" \
   -H "Content-Type: application/json" \
   -d '{"text":"I want a refund immediately"}'
-⚠️ Key Engineering Considerations
+ Key Engineering Considerations
 1. Training vs Inference Consistency
 
 Initially, the model was logged without preprocessing, causing inference failures.
@@ -155,13 +155,13 @@ host.docker.internal
 
 Model dependency mismatches (e.g., psutil) were identified via MLflow warnings and handled during container build.
 
-📈 Future Improvements
+ Future Improvements
 Add larger, realistic dataset
 Introduce evaluation metrics and logging
 Implement model monitoring (drift detection)
 Add CI/CD pipeline for automated retraining and deployment
 Deploy to Kubernetes / cloud environment
-💡 Summary
+ Summary
 
 This project demonstrates:
 
