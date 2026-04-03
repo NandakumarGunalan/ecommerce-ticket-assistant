@@ -1,7 +1,6 @@
 from fastapi import FastAPI
-from app.predictor import predict_ticket
+from app.predictor import load_model, predict_ticket
 from app.schemas import TicketRequest, TicketPredictionResponse
-from app.model_loader import load_model, get_model
 
 app = FastAPI(
     title="Ecommerce Ticket Assistant API",
@@ -23,10 +22,10 @@ def root():
 
 @app.get("/health")
 def health():
-    model = get_model()
+    from app.predictor import MODEL
     return {
         "status": "ok",
-        "model_loaded": model is not None
+        "model_loaded": MODEL is not None
     }
 
 

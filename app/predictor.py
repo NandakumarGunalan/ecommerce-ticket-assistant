@@ -1,11 +1,21 @@
-from app.model_loader import get_model
-import pandas as pd
+import mlflow
+import mlflow.pyfunc
+
+mlflow.set_tracking_uri("http://127.0.0.1:5001")
+mlflow.set_registry_uri("http://127.0.0.1:5001")
+
+MODEL = None
+
+
+def load_model():
+    global MODEL
+    MODEL = mlflow.pyfunc.load_model(
+        model_uri="models:/ecommerce-ticket-model@champion"
+    )
 
 
 def predict_ticket(text: str):
-    model = get_model()
-
-    if model is None:
+    if MODEL is None:
         return {
             "priority": "unknown",
             "category": "unknown",
@@ -13,14 +23,12 @@ def predict_ticket(text: str):
             "model_version": "model_not_loaded"
         }
 
-    df = pd.DataFrame({"text": [text]})
-    prediction = model.predict(df)
-
-    predicted_priority = prediction[0]
+    prediction = MODEL.predict([text])[0]
+    print(f"[PREDICT] input={text} output={prediction}")
 
     return {
-        "priority": str(predicted_priority),
-        "category": "predicted_category",
+        "priority": str(prediction),
+        "category": "ticket_classification",
         "confidence": 0.90,
-        "model_version": "mlflow-model"
+        "model_version": "v3"
     }
