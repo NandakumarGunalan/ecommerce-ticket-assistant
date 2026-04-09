@@ -24,3 +24,6 @@ mlflow.db
 
 # Logs
 *.log
+
+# Local env config (contains project IDs)
+synthetic_data/.env

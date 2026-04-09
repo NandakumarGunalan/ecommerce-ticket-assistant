@@ -124,11 +124,13 @@ The priority signal (urgency, frustration, complexity) should be clear from the 
 
 ### Batching
 
-To minimize API calls, each request asks the LLM to return a **JSON array of 20 tickets** for 20 different metadata combinations passed in a single prompt. This reduces ~10,000 calls to ~500 calls.
+Each request asks the LLM to return a **JSON array of 10 tickets** for 10 different metadata combinations passed in a single prompt. This reduces ~10,000 calls to ~1,000 calls.
+
+**Why batch size 10, not 20:** Quality degrades noticeably in larger batches — later items become shorter, more repetitive, and the model loses track of the specific metadata for each scenario (e.g., blurring "frustrated/high" and "negative/medium" into the same tone). JSON formatting errors also increase with batch size. 10 is a practical sweet spot between cost and quality. Batch size 1 would produce the most consistent output but at 10x the cost and call volume.
 
 ```
-Given the following 20 customer support scenarios, write one ticket message for each.
-Return a JSON array of 20 strings in the same order.
+Given the following 10 customer support scenarios, write one ticket message for each.
+Return a JSON array of 10 strings in the same order.
 
 Scenarios:
 1. issue_area=Order, sub_category=Delivery delay, sentiment=frustrated, product=Laptop...
@@ -138,7 +140,13 @@ Scenarios:
 
 ### Model
 
-Use the Claude API (`claude-haiku-4-5-20251001`) for cost-efficient batch generation. Estimated cost: ~500 API calls × small batch size = low token cost.
+**Recommended: `claude-sonnet-4-6` (Claude Sonnet) at batch size 10.**
+
+Smaller models (e.g., Haiku) are reliable at batch size 1 but degrade faster at larger batch sizes — more likely to ignore specific metadata, produce repetitive phrasing, or return malformed JSON. For this task, quality matters: the `ticket_text` must implicitly encode `customer_sentiment` and `issue_complexity` because those are the priority signal. Noisy text generation at data creation time produces noisy training labels that are hard to fix later.
+
+Sonnet handles instruction-following at batch size 10 reliably, produces more linguistically diverse outputs, and keeps JSON structure intact. Estimated cost: ~1,000 API calls.
+
+**Alternative: Gemini** (e.g., `gemini-2.5-pro`) should behave similarly to Sonnet at batch size 10, but this is less tested for this specific task. If using Gemini, validate empirically: run 50 rows at batch sizes 1, 5, and 10 and check whether sentiment/complexity cues are clearly present and texts are non-repetitive before committing to full generation.
 
 ---
 
@@ -153,7 +161,7 @@ Use the Claude API (`claude-haiku-4-5-20251001`) for cost-efficient batch genera
 
 ### Step 2 — Generate Ticket Text (`generate.py`)
 - Read `data/grid.csv`
-- Chunk rows into batches of 20
+- Chunk rows into batches of 10
 - For each batch, build the prompt and call the Claude API
 - Parse the returned JSON array and write `ticket_text` back to each row
 - Save incrementally to `data/tickets_raw.csv` (so progress is not lost on failure)
