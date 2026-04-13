@@ -342,8 +342,8 @@ These are the points where the agent **must stop and request human review** befo
 4. Write and run `tests/test_build_grid.py` — all tests must pass
 5. Run `build_grid.py` to produce `data/grid.csv`
 
-- [ ] **CHECKPOINT 1:** Have the user inspect `data/grid.csv` — verify row count, column names, value ranges, and priority distribution look correct. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After user confirms Phase 1 is complete, commit all Phase 1 files.
+- [x] **CHECKPOINT 1:** Have the user inspect `data/grid.csv` — verify row count, column names, value ranges, and priority distribution look correct. **Stop and wait for human approval.**
+- [x] **COMMIT:** After user confirms Phase 1 is complete, commit all Phase 1 files.
 
 ### Phase 2 — LLM Text Generation
 
@@ -351,8 +351,8 @@ These are the points where the agent **must stop and request human review** befo
 7. Write and run `tests/test_generate.py` — all tests must pass
 8. **User runs `generate.py` themselves** (long-running LLM calls — not run by the agent)
 
-- [ ] **CHECKPOINT 2:** Have the user inspect `data/tickets_raw.csv` — spot-check ticket text quality, sentiment/complexity alignment, and JSON parse success rate. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After user confirms Phase 2 is complete, commit all Phase 2 files.
+- [x] **CHECKPOINT 2:** Have the user inspect `data/tickets_raw.csv` — spot-check ticket text quality, sentiment/complexity alignment, and JSON parse success rate. **Stop and wait for human approval.**
+- [x] **COMMIT:** After user confirms Phase 2 is complete, commit all Phase 2 files.
 
 ### Phase 3 — Validation & Final Output
 
@@ -360,5 +360,5 @@ These are the points where the agent **must stop and request human review** befo
 10. Write and run `tests/test_validate.py` — all tests must pass
 11. Run `validate.py` to produce `data/tickets.csv`
 
-- [ ] **CHECKPOINT 3:** Have the user inspect `data/tickets.csv` — verify final row count, no duplicates, priority distribution within targets, and overall data quality. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After user confirms Phase 3 is complete, commit all Phase 3 files.
+- [x] **CHECKPOINT 3:** Have the user inspect `data/tickets.csv` — verify final row count, no duplicates, priority distribution within targets, and overall data quality. **Stop and wait for human approval.**
+- [x] **COMMIT:** After user confirms Phase 3 is complete, commit all Phase 3 files.
