@@ -25,6 +25,8 @@ mlflow.db
 # Logs
 *.log
 
-# Environment variables
+# Local env config (contains project IDs)
 .env
-.env.*
+
+# Local reference data (not committed)
+.claude/
