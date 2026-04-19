@@ -233,6 +233,18 @@ def main() -> None:
         if vertex is not None:
             vertex.log_metrics(result["metrics"])
             vertex.end_run()
+
+        from training.registry import register_model
+
+        model_artifact_uri = f"{gcs_uri.rstrip('/')}/model"
+        register_model(
+            project=GCP_PROJECT,
+            region=GCP_REGION,
+            run_id=run_id,
+            artifact_uri=model_artifact_uri,
+            metrics=result["metrics"],
+            data_version=args.data_version,
+        )
         print("[train] cloud run complete.")
 
 

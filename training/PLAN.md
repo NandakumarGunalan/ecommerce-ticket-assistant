@@ -211,8 +211,8 @@ The agent **must stop and request human review** at each checkpoint before conti
 15. Run a fresh end-to-end cloud training job
 16. Verify the model appears in the Vertex AI Model Registry UI with correct metadata
 
-- [ ] **CHECKPOINT 3:** User inspects Model Registry — model is registered, versioned, and metadata is attached correctly. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After user confirms Phase 3, commit all Phase 3 files.
+- [x] **CHECKPOINT 3:** User inspects Model Registry — model is registered, versioned, and metadata is attached correctly. **Stop and wait for human approval.**
+- [x] **COMMIT:** After user confirms Phase 3, commit all Phase 3 files.
 
 ---
 
