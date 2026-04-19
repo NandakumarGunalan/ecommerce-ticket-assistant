@@ -188,8 +188,8 @@ The agent **must stop and request human review** at each checkpoint before conti
 4. Run `python training/train.py --smoke-test` locally against `synthetic_data/data/tickets.csv`
 5. Verify local artifacts in `training/artifacts/` and spot-check eval outputs
 
-- [ ] **CHECKPOINT 1:** User inspects smoke-test outputs — training completes, metrics look sane, artifacts saved. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After user confirms Phase 1, commit all Phase 1 files.
+- [x] **CHECKPOINT 1:** User inspects smoke-test outputs — training completes, metrics look sane, artifacts saved. **Stop and wait for human approval.**
+- [x] **COMMIT:** After user confirms Phase 1, commit all Phase 1 files.
 
 ### Phase 2 — Cloud Training on GPU
 
