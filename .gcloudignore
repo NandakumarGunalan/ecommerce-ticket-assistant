@@ -1,0 +1,17 @@
+.git/
+.claude/
+tests/
+**/tests/
+
+.venv/
+venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.mypy_cache/
+training/artifacts/
+synthetic_data/data/
+node_modules/
+*.ipynb_checkpoints/
+.DS_Store
+.env

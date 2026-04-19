@@ -201,8 +201,8 @@ The agent **must stop and request human review** at each checkpoint before conti
 11. Submit first Vertex AI Custom Training job via `python training/launch.py`
 12. Verify job completes, metrics are logged to Vertex AI Experiments, model artifacts land in GCS
 
-- [ ] **CHECKPOINT 2:** User inspects Vertex AI Experiments UI — run is logged with metrics, confusion matrix, misclassification samples. GCS has the saved model. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After user confirms Phase 2, commit all Phase 2 files.
+- [x] **CHECKPOINT 2:** User inspects Vertex AI Experiments UI — run is logged with metrics, confusion matrix, misclassification samples. GCS has the saved model. **Stop and wait for human approval.**
+- [x] **COMMIT:** After user confirms Phase 2, commit all Phase 2 files.
 
 ### Phase 3 — Model Registry & Versioning
 
