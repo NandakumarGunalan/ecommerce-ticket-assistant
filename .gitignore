@@ -33,3 +33,6 @@ mlflow.db
 
 # Synthetic data (generated locally, not committed)
 synthetic_data/data/
+
+# Training artifacts from smoke-test / local runs
+training/artifacts/
