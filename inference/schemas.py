@@ -1,34 +1,58 @@
-"""Pydantic request/response schemas for online inference.
+"""Pydantic request/response schemas for inference.
 
-Not used by the batch path — batch_predict.py operates on DB rows directly.
-These are scaffolding for the future online endpoint (see inference/PLAN.md).
+Two groupings:
+
+- ``Prediction`` — transport-agnostic per-ticket result produced by
+  :func:`inference.predictor.predict`. Used by both the batch CLI and the
+  online endpoint.
+- ``PredictRequest`` / ``PredictResponse`` / ``HealthResponse`` — wire-level
+  contracts for the online FastAPI endpoint (see ``inference/ONLINE_PLAN.md``).
+
+The legacy ``TicketItem`` / ``SingleTicketRequest`` / ``BatchTicketRequest`` /
+``PredictionResponse`` scaffolding from the pre-online placeholder has been
+removed in favor of the real online contract.
 """
-from typing import Optional, List, Dict
-from pydantic import BaseModel
+from typing import Dict, Optional
 
-
-class TicketItem(BaseModel):
-    id: str
-    ticket_text: str
-
-
-class SingleTicketRequest(BaseModel):
-    ticket_text: str
-
-
-class BatchTicketRequest(BaseModel):
-    tickets: List[TicketItem]
+from pydantic import BaseModel, Field, field_validator
 
 
 class Prediction(BaseModel):
+    """One scored ticket. Produced by :func:`inference.predictor.predict`."""
+
     id: Optional[str] = None
     predicted_priority: str
     confidence: float
     all_scores: Dict[str, float]
 
 
-class PredictionResponse(BaseModel):
-    predictions: List[Prediction]
+class PredictRequest(BaseModel):
+    """Single-ticket online inference request."""
+
+    ticket_text: str = Field(..., max_length=10_000)
+
+    @field_validator("ticket_text")
+    @classmethod
+    def non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("ticket_text must be non-empty")
+        return v
+
+
+class PredictResponse(BaseModel):
+    """Single-ticket online inference response."""
+
+    predicted_priority: str
+    confidence: float
+    all_scores: Dict[str, float]
     model_version: str
     model_run_id: str
     latency_ms: int
+
+
+class HealthResponse(BaseModel):
+    """Response shape for ``GET /healthz``."""
+
+    status: str
+    model_version: Optional[str] = None
+    model_run_id: Optional[str] = None
