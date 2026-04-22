@@ -417,8 +417,8 @@ The agent must stop and request human review at each checkpoint.
 2. Write `tests/test_predictor.py` and `tests/test_model_loader.py` — all must pass
 3. Run a local CLI smoke test that loads the real Vertex model and predicts on a tiny hand-crafted list of 3 tickets (no CSV, just `python -c "..."`) — verifies Vertex→GCS→HF path works locally
 
-- [ ] **CHECKPOINT 1:** User inspects: model loads correctly, predictions look sane, tests pass. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After approval, commit Phase 1 files.
+- [x] **CHECKPOINT 1:** User inspects: model loads correctly, predictions look sane, tests pass. **Stop and wait for human approval.**
+- [x] **COMMIT:** After approval, commit Phase 1 files.
 
 ### Phase 2 — Batch CLI + Container
 
