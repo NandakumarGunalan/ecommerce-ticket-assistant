@@ -433,11 +433,12 @@ The agent must stop and request human review at each checkpoint.
 
 ### Phase 3 — Cloud Run Job Deploy
 
-9. Create the `inference-runner` service account with required roles (documented in PLAN, executed via `gcloud` commands or a `setup.sh`)
-10. Deploy the Cloud Run Job: `gcloud run jobs deploy distilbert-priority-batch --image=... --service-account=... --no-allow-unauthenticated`
-11. Upload a small test CSV to `gs://.../ingest/tickets/test/raw.csv`
-12. Invoke: `gcloud run jobs execute distilbert-priority-batch --args="--input=gs://...,--output-dir=gs://..."`
-13. Verify: scored CSV + summary.json appear in GCS, structured logs appear in Cloud Logging, model_version in summary matches Registry default
+9. Create the `inference-runner` service account with required roles (see Required IAM Roles section)
+10. Deploy the Cloud Run Job: `gcloud run jobs deploy distilbert-priority-batch --image=... --service-account=... --no-allow-unauthenticated`, with placeholder Cloud SQL env vars
+11. Stand up a throwaway Cloud SQL Postgres instance, seed ~50 tickets from the training CSV, apply the predictions table schema (per "Predictions Table Contract" section)
+12. Update Job env vars with real connection details. Invoke: `gcloud run jobs execute distilbert-priority-batch --region=us-central1 --wait`
+13. Verify: predictions table populated, `model_version` in inserted rows matches Registry default, structured logs appear in Cloud Logging, class distribution is sane
+14. Tear down the throwaway instance; reset Job env vars to placeholders pending the teammate's production Cloud SQL (see "Teammate Handoff" below)
 
 - [x] **CHECKPOINT 3:** User inspects: Job runs successfully on Cloud Run, outputs land in GCS, logs are structured. **Stop and wait for human approval.**
 - [x] **COMMIT:** After approval, commit Phase 3 files.
@@ -462,6 +463,76 @@ The agent must stop and request human review at each checkpoint.
 - `roles/artifactregistry.writer` on `ml-repo`
 
 No external secrets.
+
+---
+
+## Teammate Handoff
+
+The inference pipeline is fully deployed and end-to-end verified as of Phase 3 (see smoke-test note above). What's left to go live in production is the teammate's Cloud SQL instance plus a small wire-up step — no code changes on this branch.
+
+### What's already in place (owned by this branch)
+
+- Cloud Run Job `distilbert-priority-batch` in `us-central1`, image `us-central1-docker.pkg.dev/msds-603-victors-demons/ml-repo/distilbert-priority-inference:latest`
+- Runtime service account `inference-runner@msds-603-victors-demons.iam.gserviceaccount.com` with all required roles (see Required IAM Roles)
+- Job env vars currently set to placeholders: `CLOUD_SQL_CONNECTION_NAME=PLACEHOLDER_PROJECT:REGION:INSTANCE`, `CLOUD_SQL_DB_NAME=PLACEHOLDER_DB`, `CLOUD_SQL_DB_USER=inference-runner@msds-603-victors-demons.iam`
+
+### What the teammate owns
+
+1. **Provision the production Cloud SQL Postgres instance** with IAM authentication enabled:
+   ```bash
+   gcloud sql instances create <instance-name> \
+       --database-version=POSTGRES_15 \
+       --tier=<chosen-tier> \
+       --region=us-central1 \
+       --database-flags=cloudsql.iam_authentication=on \
+       --project=msds-603-victors-demons
+   ```
+2. **Create the database** (name it whatever fits their backend conventions; they tell us the name back).
+3. **Create the `tickets` table** per their backend's needs — our pipeline only requires that it expose `ticket_id TEXT` and `ticket_text TEXT` columns (readable by the inference SA). If the real schema has `subject` + `body` separately, they tell us and we add a one-line SELECT concat in `db.py`.
+4. **Create the `predictions` table** exactly as specified in the "Predictions Table Contract" section (Postgres DDL is in the plan). Run the migration once.
+5. **Register the inference SA as an IAM DB user and grant table-level access:**
+   ```sql
+   -- From psql as a superuser on the new instance
+   CREATE USER "inference-runner@msds-603-victors-demons.iam" WITH LOGIN;
+   GRANT CONNECT ON DATABASE <db-name> TO "inference-runner@msds-603-victors-demons.iam";
+   GRANT USAGE ON SCHEMA public TO "inference-runner@msds-603-victors-demons.iam";
+   GRANT SELECT ON tickets TO "inference-runner@msds-603-victors-demons.iam";
+   GRANT SELECT, INSERT, UPDATE ON predictions TO "inference-runner@msds-603-victors-demons.iam";
+   ```
+   Equivalent gcloud step for the IAM user itself (outside psql):
+   ```bash
+   gcloud sql users create "inference-runner@msds-603-victors-demons.iam" \
+       --instance=<instance-name> \
+       --type=CLOUD_IAM_SERVICE_ACCOUNT
+   ```
+6. **Report back** with the connection name (format `msds-603-victors-demons:us-central1:<instance-name>`) and the database name.
+
+### What we do once teammate reports back
+
+One command wires the job to production:
+
+```bash
+gcloud run jobs update distilbert-priority-batch \
+    --region=us-central1 \
+    --update-env-vars="CLOUD_SQL_CONNECTION_NAME=<their-conn-name>,CLOUD_SQL_DB_NAME=<their-db-name>,CLOUD_SQL_DB_USER=inference-runner@msds-603-victors-demons.iam" \
+    --project=msds-603-victors-demons
+```
+
+Then execute once as a production smoke test:
+
+```bash
+gcloud run jobs execute distilbert-priority-batch --region=us-central1 --wait
+```
+
+Expected: the job queries their tickets table for anything not yet scored under the current default model version, writes predictions rows, exits 0. The Cloud Logging event `batch_run_summary` reports counts and class distribution.
+
+After that succeeds, Cloud Scheduler wiring (see next section) is ~5 lines of gcloud.
+
+### Gotchas we learned during Phase 3 smoke test
+
+- **`roles/cloudsql.client` alone is not enough for IAM DB auth.** The SA also needs `roles/cloudsql.instanceUser`. Without the second role, the `cloud-sql-python-connector` fails fetching an ephemeral cert with `ServerDisconnectedError` — cryptic, and only surfaces at runtime. Both roles are already granted to `inference-runner`; mentioning it here so nobody re-derives it.
+- **Cloud SQL first-instance creation on a fresh project is slow.** Enabling the `sqladmin.googleapis.com` API and creating the first instance took ~12 minutes end-to-end during Phase 3. Subsequent creates are faster. Budget accordingly.
+- **`cloudsql.iam_authentication=on` must be set at create time** (or via patch, which restarts the instance). Missing this flag is the most common cause of IAM-auth connection failures.
 
 ---
 
