@@ -32,3 +32,13 @@ ID2LABEL: Dict[int, str] = {i: label for i, label in enumerate(LABELS)}
 # Must match training's max_length so inference-time truncation behaves the same
 # way the model was trained under.
 MAX_LENGTH: int = 256
+
+# --- Cloud SQL connection --------------------------------------------------
+# Resolved from env at runtime (not baked into the image) so the same container
+# can point at different instances / databases across environments. The IAM
+# user is typically the inference service account email with the trailing
+# "@<project>.iam.gserviceaccount.com" suffix stripped, per the Cloud SQL IAM
+# auth convention.
+CLOUD_SQL_CONNECTION_NAME_ENV: str = "CLOUD_SQL_CONNECTION_NAME"  # project:region:instance
+CLOUD_SQL_DB_NAME_ENV: str = "CLOUD_SQL_DB_NAME"
+CLOUD_SQL_DB_USER_ENV: str = "CLOUD_SQL_DB_USER"
