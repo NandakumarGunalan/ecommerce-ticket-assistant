@@ -1,35 +1,26 @@
+"""FastAPI app for online prediction mode.
+
+Online mode is not wired up in this branch — it will be enabled in a
+follow-up once the batch pipeline is stable. See inference/PLAN.md,
+"Online Mode (Future)" section.
+"""
 from fastapi import FastAPI
-from app.predictor import load_model, predict_ticket
-from app.schemas import TicketRequest, TicketPredictionResponse
 
 app = FastAPI(
-    title="Ecommerce Ticket Assistant API",
-    version="0.1.0"
+    title="Ecommerce Ticket Assistant — Inference API",
+    version="0.1.0",
 )
-
-
-@app.on_event("startup")
-def startup_event():
-    load_model()
 
 
 @app.get("/")
 def root():
-    return {
-        "message": "Welcome to the Ecommerce Ticket Assistant API"
-    }
+    return {"status": "scaffold", "message": "Online mode not yet implemented."}
 
 
 @app.get("/health")
 def health():
-    from app.predictor import MODEL
-    return {
-        "status": "ok",
-        "model_loaded": MODEL is not None
-    }
+    return {"status": "ok"}
 
 
-@app.post("/predict", response_model=TicketPredictionResponse)
-def predict(request: TicketRequest):
-    result = predict_ticket(request.text)
-    return TicketPredictionResponse(**result)
+# TODO(online): wire /predict endpoint against inference.predictor.predict
+# and inference.schemas when ready.
