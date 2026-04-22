@@ -439,8 +439,10 @@ The agent must stop and request human review at each checkpoint.
 12. Invoke: `gcloud run jobs execute distilbert-priority-batch --args="--input=gs://...,--output-dir=gs://..."`
 13. Verify: scored CSV + summary.json appear in GCS, structured logs appear in Cloud Logging, model_version in summary matches Registry default
 
-- [ ] **CHECKPOINT 3:** User inspects: Job runs successfully on Cloud Run, outputs land in GCS, logs are structured. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After approval, commit Phase 3 files.
+- [x] **CHECKPOINT 3:** User inspects: Job runs successfully on Cloud Run, outputs land in GCS, logs are structured. **Stop and wait for human approval.**
+- [x] **COMMIT:** After approval, commit Phase 3 files.
+
+**Phase 3 smoke test result (end-to-end, 2026-04-21):** provisioned a throwaway `db-f1-micro` Cloud SQL Postgres instance, seeded 50 tickets from the training CSV, executed the Cloud Run Job against it. Result: all 50 tickets scored, predictions table populated with correct model version (`2`), class distribution `{low:6, medium:18, high:21, urgent:5}` matching training-set shape, sample confidences 0.56–0.95. IAM auth via `roles/cloudsql.client` **plus** `roles/cloudsql.instanceUser` (the latter is required for IAM DB auth — updated the IAM role list below). Instance torn down after verification. Cloud Run Job env vars reset to placeholders pending teammate's real Cloud SQL provisioning.
 
 ---
 
@@ -450,6 +452,8 @@ The agent must stop and request human review at each checkpoint.
 - `roles/storage.objectAdmin` on `msds603-mlflow-artifacts` — read input, write output
 - `roles/aiplatform.user` — read Model Registry
 - `roles/logging.logWriter` — write structured logs
+- `roles/cloudsql.client` — open Cloud SQL connections via the Python connector
+- `roles/cloudsql.instanceUser` — required for IAM database authentication (login as an IAM user, not a password user)
 
 **Caller identity (teammate's backend SA, when online mode arrives):**
 - `roles/run.invoker` on the specific Cloud Run Job / Service
