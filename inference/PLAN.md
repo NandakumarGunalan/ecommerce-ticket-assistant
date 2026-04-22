@@ -286,7 +286,7 @@ CREATE INDEX predictions_batch_run_id_idx ON predictions(batch_run_id);
 - If they want "score as of a specific model version," they query `WHERE model_version = 'X'`.
 - Historical drift analysis: `SELECT model_version, AVG(confidence), COUNT(*) FROM predictions GROUP BY model_version` gives version-over-version comparisons for free.
 
-**DB choice still open:** Cloud SQL Postgres, BigQuery, Firestore are all viable. `db.py` will have one implementation; swapping DBs means rewriting `db.py` only.
+**DB choice: Cloud SQL for PostgreSQL.** Decided. The schema above uses Postgres-native types (`JSONB`, `TIMESTAMPTZ`) and Postgres upsert semantics (`INSERT ... ON CONFLICT`). `db.py` will use `pg8000` (pure-Python Postgres driver — no native build dependencies, smaller container) plus `cloud-sql-python-connector` for IAM-based auth from the Cloud Run Job to Cloud SQL. No passwords, no proxy sidecar, no VPC plumbing.
 
 ---
 
@@ -494,9 +494,8 @@ Not built in v1 because (a) the DB doesn't exist yet and (b) it's trivial to add
 
 ## Open Questions (for follow-up branches)
 
-- **DB choice**: Cloud SQL (Postgres), BigQuery, or Firestore? Affects only `db.py` and `requirements.txt`. Decision drivers: does the backend need transactional semantics (Postgres), analytics-native storage (BigQuery), or document-oriented writes (Firestore)? Surface to the teammate early so `db.py` can be written against a real target.
-- **Ticket text column source**: is `ticket_text` a single column in the tickets table, or do we need to concatenate `subject + body` (or similar) in the SELECT? Confirm with teammate before writing `db.py`.
-- **Auth from inference SA to DB**: Cloud SQL uses IAM database authentication + the Cloud SQL Auth Proxy sidecar (or `cloud-sql-python-connector`). BigQuery just needs `roles/bigquery.dataEditor` on the inference SA. Firestore needs `roles/datastore.user`. All three are solved problems, just different code in `db.py`.
+- **Cloud SQL instance details**: once the teammate provisions the instance, we need the connection name (format: `project:region:instance`), database name, and the inference service account needs `roles/cloudsql.client` granted on the project. Record these in `inference/config.py` (connection name / db name) and as env vars at deploy time.
+- **Ticket text column source**: is `ticket_text` a single column in the tickets table, or do we need to concatenate `subject + body` (or similar) in the SELECT? Confirm with teammate before writing the SELECT in `db.py`.
 - **Backfill on retrain**: current default behavior scores every historical ticket under a new model version. Fine now, will need a selective policy later. Follow-up branch when we have real volumes.
 - **Parquet-on-GCS interchange**: revisit when (a) a second consumer shows up (dashboard, analyst notebook), or (b) row volumes cross ~10M/day. At that point DB-direct becomes the bottleneck and an intermediate columnar file gives us parallelism + reproducibility.
 - **Monitoring**: Cloud Run default metrics (invocations, errors, p99 latency) sufficient for v1. `/metrics` Prometheus endpoint is a good interview talking point but adds real ops surface we don't need yet.
