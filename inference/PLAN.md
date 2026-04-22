@@ -428,8 +428,8 @@ The agent must stop and request human review at each checkpoint.
 7. Build via `gcloud builds submit --config=inference/cloudbuild.yaml .`
 8. Test the container locally: `docker run --rm -v $PWD/tmp:/tmp <image> --input /tmp/tiny.csv --output-dir /tmp/out`
 
-- [ ] **CHECKPOINT 2:** User inspects: local CSV roundtrip works, container builds successfully, container runs locally. **Stop and wait for human approval.**
-- [ ] **COMMIT:** After approval, commit Phase 2 files.
+- [x] **CHECKPOINT 2:** User inspects: local CSV roundtrip works, container builds successfully, container runs locally. **Stop and wait for human approval.**
+- [x] **COMMIT:** After approval, commit Phase 2 files.
 
 ### Phase 3 — Cloud Run Job Deploy
 
