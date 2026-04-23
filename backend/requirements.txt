@@ -1,0 +1,15 @@
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+httpx==0.28.1
+
+# DB — production path uses Cloud SQL Python Connector + pg8000
+# (no sidecar proxy required on Cloud Run). The plan mentions psycopg as
+# an alternative; we pick pg8000 for consistency with inference/db.py.
+pg8000==1.31.2
+cloud-sql-python-connector[pg8000]==1.13.0
+sqlalchemy==2.0.36
+
+# GCP auth + secrets
+google-auth==2.36.0
+google-cloud-secret-manager==2.21.1
