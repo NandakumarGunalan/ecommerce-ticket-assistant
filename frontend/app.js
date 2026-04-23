@@ -217,7 +217,7 @@ function renderPrediction(ticket) {
     typeof ticket.confidence === "number"
       ? `${Math.round(ticket.confidence * 100)}%`
       : "--";
-  modelValue.textContent = ticket.model_version || "--";
+  modelValue.textContent = ticket.model_version ? `v${ticket.model_version}` : "--";
   ticketIdValue.textContent = ticket.ticket_id ? ticket.ticket_id.slice(0, 8) : "--";
 
   currentPredictionId = ticket.prediction_id || null;
@@ -252,19 +252,23 @@ function renderTickets(tickets) {
     item.className = `ticket-item ticket-item--${priority}`;
     item.dataset.predictionId = t.prediction_id || "";
 
-    const text = t.ticket_text || "";
+    const text = t.ticket_text || t.text || "";
     const confPct =
       typeof t.confidence === "number" ? `${Math.round(t.confidence * 100)}% confidence` : "--";
+    const modelLabel = t.model_version ? `v${t.model_version}` : "unknown model";
+    const textBlock = text
+      ? `<p class="ticket-item__text">${escapeHtml(truncateText(text, 200))}</p>`
+      : `<p class="ticket-item__text ticket-item__text--empty">(no ticket text)</p>`;
 
     item.innerHTML = `
       <div class="ticket-item__meta">
         <span class="priority-chip">${formatPriority(priority)}</span>
         <span>${escapeHtml(shortDate(t.created_at))}</span>
       </div>
-      <p>${escapeHtml(truncateText(text))}</p>
+      ${textBlock}
       <div class="ticket-item__footer">
         <span>${confPct}</span>
-        <span>${escapeHtml(t.model_version || "unknown model")}</span>
+        <span>${escapeHtml(modelLabel)}</span>
       </div>
       <div class="feedback-row feedback-row--row">
         <div class="feedback-buttons">

@@ -417,9 +417,14 @@ dd {
 .ticket-item p {
   max-width: 860px;
   margin-bottom: 14px;
-  color: var(--text);
-  font-size: 1.05rem;
+  color: var(--muted);
+  font-size: 1.0rem;
   line-height: 1.5;
+}
+
+.ticket-item__text--empty {
+  color: var(--faint);
+  font-style: italic;
 }
 
 .ticket-item__footer {
