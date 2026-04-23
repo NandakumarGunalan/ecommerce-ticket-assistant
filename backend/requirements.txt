@@ -13,3 +13,6 @@ sqlalchemy==2.0.36
 # GCP auth + secrets
 google-auth==2.36.0
 google-cloud-secret-manager==2.21.1
+
+# Firebase Auth (ID-token verification on the backend)
+firebase-admin>=6.5
