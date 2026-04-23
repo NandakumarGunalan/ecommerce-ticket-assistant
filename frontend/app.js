@@ -146,18 +146,22 @@ function showToast(message, tone = "info", ttl = 4000) {
 }
 
 // ---------- authedFetch ----------
-async function authedFetch(path, options = {}) {
-  const url = path.startsWith("http") ? path : `${apiBaseUrl}${path}`;
+// Wave 5 (Diagnosis C Fix A): on 401 we try a forced token refresh + one
+// retry before giving up. Only a second consecutive 401 after refresh gets
+// treated as a truly expired session. We do NOT force signOut on the first
+// 401 — that caused a silent loop where a transient clock skew or a
+// momentarily-unreachable backend bounced the user back to the gate with
+// no visible explanation.
+async function doFetchWithToken(url, options, forceRefresh) {
   const headers = new Headers(options.headers || {});
   if (options.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-
   if (!useMockApi) {
     const fb = window.__firebase;
     if (fb) {
       try {
-        const token = await fb.getIdToken();
+        const token = await fb.getIdToken(forceRefresh);
         if (token) {
           headers.set("Authorization", `Bearer ${token}`);
         }
@@ -166,20 +170,43 @@ async function authedFetch(path, options = {}) {
       }
     }
   }
+  return fetch(url, { ...options, headers });
+}
 
-  const response = await fetch(url, { ...options, headers });
+async function authedFetch(path, options = {}) {
+  const url = path.startsWith("http") ? path : `${apiBaseUrl}${path}`;
+
+  let response = await doFetchWithToken(url, options, false);
 
   if (!useMockApi) {
     if (response.status === 401) {
-      // Read the body for diagnostics before deciding what to do.
+      // Read body for diagnostics.
       let bodyText = "";
       try { bodyText = await response.clone().text(); } catch (_) { /* ignore */ }
-      console.warn("[authedFetch] 401 from", url, "body:", bodyText);
-      showToast("Session expired. Please sign in again.", "danger");
+      console.warn("[authedFetch] 401 from", url, "body:", bodyText, "— refreshing token and retrying once");
+      // Force-refresh the ID token and retry exactly once.
       try {
-        if (window.__firebase) await window.__firebase.signOut();
-      } catch (_) { /* ignore */ }
-      throw new Error("unauthorized");
+        response = await doFetchWithToken(url, options, true);
+      } catch (err) {
+        console.warn("[authedFetch] retry fetch failed", err);
+      }
+      if (response.status === 401) {
+        // Still 401 after refresh — the session is genuinely bad. Surface a
+        // visible error and sign the user out as a last resort.
+        let retryBody = "";
+        try { retryBody = await response.clone().text(); } catch (_) { /* ignore */ }
+        console.error("[authedFetch] 401 persists after token refresh", url, retryBody);
+        showAuthBanner(
+          "Your session is not authorized. Please sign in again.",
+          retryBody,
+        );
+        showToast("Session expired. Please sign in again.", "danger");
+        try {
+          if (window.__firebase) await window.__firebase.signOut();
+        } catch (_) { /* ignore */ }
+        throw new Error("unauthorized");
+      }
+      console.log("[authedFetch] retry after token refresh succeeded", url);
     }
     if (response.status === 429) {
       showToast("Slow down — limit is 50 req/min.", "warn");
@@ -189,6 +216,24 @@ async function authedFetch(path, options = {}) {
 
   return response;
 }
+
+function showAuthBanner(message, detail) {
+  if (!authError) return;
+  authError.hidden = false;
+  authError.textContent = detail ? `${message} (${detail})` : message;
+}
+function clearAuthBanner() {
+  if (!authError) return;
+  authError.hidden = true;
+  authError.textContent = "";
+}
+
+// Expose a hook so the GIS callback path can surface credential-exchange
+// errors on the auth gate even if the user never reaches authedFetch.
+window.__authSignalError = (err) => {
+  const msg = (err && err.message) || String(err || "unknown_error");
+  showAuthBanner(`Sign-in failed: ${msg}`);
+};
 
 // ---------- API calls ----------
 async function apiHealth() {
@@ -429,11 +474,15 @@ function showAppUI(user) {
 async function onSignedIn(user) {
   currentUser = user;
   showAppUI(user);
+  clearAuthBanner();
   if (!appBooted) {
     appBooted = true;
     updateCharacterCount();
   }
-  // Confirm token/session with backend /me, then run initial loads.
+  // Confirm token/session with backend /me, then run initial loads. Note:
+  // authedFetch now force-refreshes the token and retries once on the first
+  // 401 before giving up. If /me still fails after that, authedFetch has
+  // already shown a visible banner + signed the user out, so we just bail.
   try {
     if (!useMockApi) {
       const me = await apiMe();
@@ -443,7 +492,6 @@ async function onSignedIn(user) {
     }
   } catch (err) {
     console.warn("/me check failed", err);
-    // If /me failed with unauthorized, authedFetch already signed the user out.
     return;
   }
 
@@ -505,15 +553,16 @@ if (btnSignIn) {
       showToast("Auth not ready. Try again in a moment.", "danger");
       return;
     }
+    clearAuthBanner();
     btnSignIn.disabled = true;
     try {
       await fb.signIn();
+      // Note: with GIS, signIn() returns immediately after opening the
+      // Google-owned popup. The Firebase sign-in actually completes inside
+      // the GIS callback (see index.html), which drives onAuthStateChanged.
     } catch (err) {
       console.warn("Sign-in failed", err);
-      if (authError) {
-        authError.hidden = false;
-        authError.textContent = `Sign-in failed: ${err?.message || err}`;
-      }
+      showAuthBanner(`Sign-in failed: ${err?.message || err}`);
     } finally {
       btnSignIn.disabled = false;
     }

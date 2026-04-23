@@ -22,23 +22,53 @@ Authentication** (Google Sign-In) and attaches a Firebase ID token as a
 - Checks endpoint health via `GET /health` on page load (public, no auth).
 - Optional mock mode for offline UI work (bypasses auth entirely).
 
-## Sign-in Flow
+## Sign-in Flow (GIS + signInWithCredential)
 
-1. Page loads. The Firebase SDK initializes using `window.TICKET_CONSOLE_CONFIG.FIREBASE_CONFIG`.
-2. `onAuthStateChanged` fires:
+Starting in Wave 5 the frontend uses **Google Identity Services (GIS) +
+`signInWithCredential`** — Firebase's recommended "Option 5" pattern
+([docs](https://firebase.google.com/docs/auth/web/redirect-best-practices)).
+We do **not** use `signInWithPopup` or `signInWithRedirect`.
+
+Why: both of those flows route through a Firebase auth iframe served from
+`<project>.firebaseapp.com`. Under Chrome's storage partitioning that iframe
+is a third-party frame with no access to its own IndexedDB, so the returned
+credential silently never becomes an auth state. Full background in
+`.claude/FIREBASE_AUTH_BUG.md` and the `.claude/diagnosis_*.md` files.
+
+The GIS path avoids the iframe entirely:
+
+1. Page loads. `accounts.google.com/gsi/client` is loaded in `<head>`, and the
+   Firebase SDK initializes in the module script at the bottom of
+   `index.html`. We import only `initializeApp`, `getAuth`,
+   `onAuthStateChanged`, `signInWithCredential`, `signOut`, and
+   `GoogleAuthProvider` — no `signInWithPopup`, no `signInWithRedirect`,
+   no `getRedirectResult`.
+2. User clicks "Sign in with Google". `signIn()` calls
+   `google.accounts.oauth2.initTokenClient({ client_id, scope: "openid email profile" }).requestAccessToken()`.
+   Google owns the popup — not Firebase. No third-party iframe is involved.
+3. Google returns an access token to the GIS callback. We exchange it via
+   `signInWithCredential(auth, GoogleAuthProvider.credential(null, access_token))`.
+   Firebase mints its own session and fires `onAuthStateChanged`.
+4. `onAuthStateChanged`:
    - **Signed out** -> show `#auth-gate` with a "Sign in with Google" button.
-   - **Signed in** -> hide gate, show the main app and a `#user-bar` with the
-     user's email + a "Sign out" button. Then call `GET /me` to confirm the
-     token is valid and finally load the initial `GET /tickets` list.
-3. Every fetch to the backend goes through `authedFetch(path, opts)`, which:
+   - **Signed in** -> hide gate, show the main app and a `#user-bar`.
+     Then call `GET /me` to confirm the Firebase ID token is accepted by the
+     backend and load the initial `GET /tickets` list.
+5. Every fetch to the backend goes through `authedFetch(path, opts)`, which:
    - Fetches a fresh ID token via `auth.currentUser.getIdToken()`.
    - Sets `Authorization: Bearer <token>`.
-   - On `401` -> toasts "Session expired", signs the user out, returns them to
-     the gate.
-   - On `429` -> toasts "Slow down - limit is 50 req/min" (does not disrupt
-     session).
-4. Sign-out clicks `signOut(auth)`; the auth listener flips the UI back to the
-   gate.
+   - On `401` -> **force-refreshes** the ID token and retries once. Only if
+     the retry is also `401` do we surface a visible banner on the auth gate
+     and sign the user out. This prevents the silent-loop bug where a
+     transient auth hiccup bounced the user back to the sign-in screen with
+     no explanation. (Diagnosis C, Fix A.)
+   - On `429` -> toasts "Slow down - limit is 50 req/min".
+6. Sign-out clicks `signOut(auth)`; the auth listener flips the UI back to
+   the gate.
+
+The GIS path uses the **same Google OAuth client id** Firebase configures
+for its Google provider: `48533944424-ovpv2i1f9aecvr30jj1ipgg9eo2ho8l1.apps.googleusercontent.com`.
+That way the credential Google returns is valid for this Firebase project.
 
 ## Firebase config values
 

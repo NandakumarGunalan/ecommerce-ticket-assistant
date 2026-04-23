@@ -6,6 +6,14 @@
     <title>Ecommerce Ticket Console</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
+    <!-- Google Identity Services (GIS). Used to obtain a Google OAuth
+         credential directly from Google, which we then exchange for a
+         Firebase credential via signInWithCredential. This bypasses
+         Firebase's /__/auth/handler iframe + redirect dance entirely,
+         which fails under Chrome's storage partitioning. See
+         https://firebase.google.com/docs/auth/web/redirect-best-practices
+         (Option 5). -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
     <!-- Sign-in gate, shown by default during auth init; hidden once signed in. -->
@@ -154,11 +162,23 @@
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
     <script src="./config.js"></script>
-    <!-- Firebase SDK via CDN ESM. Re-exports helpers onto window for the non-module app.js. -->
+    <!-- Firebase SDK via CDN ESM. We use Firebase only for session management
+         (onAuthStateChanged, getIdToken, signOut) and for turning a Google
+         OAuth credential into a Firebase user via signInWithCredential.
+         The actual Google sign-in is performed by Google Identity Services
+         (loaded from accounts.google.com/gsi/client in <head>). This is
+         Firebase's "Option 5" pattern and avoids the broken iframe/redirect
+         flow that fails under Chrome's storage partitioning. -->
     <script type="module">
       const cfg = window.TICKET_CONSOLE_CONFIG || {};
       const forceMock = new URLSearchParams(window.location.search).get("mock") === "true";
       const useMock = forceMock || Boolean(cfg.USE_MOCK_API);
+
+      // Google OAuth client id — this is the web client id that Firebase uses
+      // for its Google provider. GIS must use the same client id so that the
+      // credential it returns is accepted by GoogleAuthProvider.credential().
+      const GOOGLE_CLIENT_ID =
+        "48533944424-ovpv2i1f9aecvr30jj1ipgg9eo2ho8l1.apps.googleusercontent.com";
 
       if (!useMock && cfg.FIREBASE_CONFIG) {
         try {
@@ -168,9 +188,7 @@
           const {
             getAuth,
             onAuthStateChanged,
-            signInWithPopup,
-            signInWithRedirect,
-            getRedirectResult,
+            signInWithCredential,
             signOut,
             GoogleAuthProvider,
           } = await import(
@@ -180,40 +198,87 @@
           const fbApp = initializeApp(cfg.FIREBASE_CONFIG);
           const auth = getAuth(fbApp);
 
-          console.log("[auth] firebase initialized, awaiting getRedirectResult...");
-          // CRITICAL: we must AWAIT getRedirectResult before subscribing to
-          // onAuthStateChanged. Otherwise the listener can fire with null
-          // before the redirect result has been processed, and the app
-          // bounces the user back to the sign-in gate (infinite loop).
-          let redirectResult = null;
-          try {
-            redirectResult = await getRedirectResult(auth);
-            if (redirectResult && redirectResult.user) {
-              console.log("[auth] getRedirectResult resolved user:", redirectResult.user.uid, redirectResult.user.email);
-            } else {
-              console.log("[auth] getRedirectResult returned null (no pending redirect, or already consumed)");
-            }
-          } catch (err) {
-            console.error("[auth] getRedirectResult error:", err && err.code, err && err.message, err);
-            window.__firebaseRedirectError = err;
+          console.log("[auth] firebase initialized (GIS mode)");
+
+          // Wait until the GIS library's oauth2 token-client API is ready.
+          function waitForGis() {
+            return new Promise((resolve, reject) => {
+              const deadline = Date.now() + 10_000;
+              const tick = () => {
+                if (
+                  window.google &&
+                  window.google.accounts &&
+                  window.google.accounts.oauth2 &&
+                  typeof window.google.accounts.oauth2.initTokenClient === "function"
+                ) {
+                  return resolve();
+                }
+                if (Date.now() > deadline) {
+                  return reject(new Error("GIS library failed to load within 10s"));
+                }
+                setTimeout(tick, 50);
+              };
+              tick();
+            });
+          }
+
+          // Lazily initialize a single token client. We use the OAuth2 token
+          // client (popup owned by Google, not Firebase) and request an
+          // access_token with openid/email/profile scope. Firebase accepts an
+          // access token as the second argument to GoogleAuthProvider.credential
+          // and will exchange it for a Firebase session. We deliberately skip
+          // One Tap: it's unreliable across browser profiles / FedCM states,
+          // and a button-triggered popup is both deterministic and matches
+          // the existing "Sign in with Google" UX.
+          let tokenClient = null;
+          function getTokenClient() {
+            if (tokenClient) return tokenClient;
+            tokenClient = window.google.accounts.oauth2.initTokenClient({
+              client_id: GOOGLE_CLIENT_ID,
+              scope: "openid email profile",
+              callback: async (resp) => {
+                if (resp && resp.error) {
+                  console.error("[auth] GIS token client error:", resp.error, resp);
+                  window.__authSignalError?.(new Error(resp.error));
+                  return;
+                }
+                const accessToken = resp && resp.access_token;
+                if (!accessToken) {
+                  console.error("[auth] GIS callback returned no access_token", resp);
+                  window.__authSignalError?.(new Error("no_access_token"));
+                  return;
+                }
+                try {
+                  const cred = GoogleAuthProvider.credential(null, accessToken);
+                  await signInWithCredential(auth, cred);
+                  console.log("[auth] signInWithCredential succeeded");
+                  // onAuthStateChanged will fire with the Firebase user.
+                } catch (err) {
+                  console.error("[auth] signInWithCredential failed", err);
+                  window.__authSignalError?.(err);
+                }
+              },
+            });
+            return tokenClient;
           }
 
           window.__firebase = {
             auth,
             onAuthStateChanged: (cb) => onAuthStateChanged(auth, cb),
             signIn: async () => {
-              // Cloud Run's default COOP=same-origin blocks popup->opener postMessage,
-              // so we use signInWithRedirect (full-page redirect to Google and back).
-              const provider = new GoogleAuthProvider();
-              console.log("[auth] starting signInWithRedirect...");
-              await signInWithRedirect(auth, provider);
-              return null; // redirect navigates away
+              await waitForGis();
+              const client = getTokenClient();
+              // Trigger the Google-owned popup. Nothing to await here; the
+              // configured callback will run signInWithCredential when Google
+              // returns a token, and onAuthStateChanged will then fire.
+              client.requestAccessToken({ prompt: "" });
+              return null;
             },
             signOut: () => signOut(auth),
-            getIdToken: async () => {
+            getIdToken: async (forceRefresh = false) => {
               const u = auth.currentUser;
               if (!u) return null;
-              return await u.getIdToken();
+              return await u.getIdToken(forceRefresh);
             },
           };
           console.log("[auth] dispatching firebase-ready, currentUser:", auth.currentUser && auth.currentUser.email);
