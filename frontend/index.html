@@ -198,17 +198,11 @@
             auth,
             onAuthStateChanged: (cb) => onAuthStateChanged(auth, cb),
             signIn: async () => {
+              // Cloud Run's default COOP=same-origin blocks popup->opener postMessage,
+              // so we use signInWithRedirect (full-page redirect to Google and back).
               const provider = new GoogleAuthProvider();
-              try {
-                return await signInWithPopup(auth, provider);
-              } catch (err) {
-                if (POPUP_FALLBACK_CODES.has(err?.code)) {
-                  console.warn("popup sign-in failed, falling back to redirect:", err?.code);
-                  await signInWithRedirect(auth, provider);
-                  return null; // redirect navigates away
-                }
-                throw err;
-              }
+              await signInWithRedirect(auth, provider);
+              return null; // redirect navigates away
             },
             signOut: () => signOut(auth),
             getIdToken: async () => {
