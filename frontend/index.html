@@ -169,6 +169,8 @@
             getAuth,
             onAuthStateChanged,
             signInWithPopup,
+            signInWithRedirect,
+            getRedirectResult,
             signOut,
             GoogleAuthProvider,
           } = await import(
@@ -178,10 +180,36 @@
           const fbApp = initializeApp(cfg.FIREBASE_CONFIG);
           const auth = getAuth(fbApp);
 
+          // If we're returning from a redirect-based sign-in, resolve it.
+          getRedirectResult(auth).catch((err) => {
+            console.warn("getRedirectResult error (safe to ignore on first load):", err);
+          });
+
+          const POPUP_FALLBACK_CODES = new Set([
+            "auth/popup-blocked",
+            "auth/popup-closed-by-user",
+            "auth/cancelled-popup-request",
+            "auth/operation-not-supported-in-this-environment",
+            "auth/web-storage-unsupported",
+            "auth/internal-error",
+          ]);
+
           window.__firebase = {
             auth,
             onAuthStateChanged: (cb) => onAuthStateChanged(auth, cb),
-            signIn: () => signInWithPopup(auth, new GoogleAuthProvider()),
+            signIn: async () => {
+              const provider = new GoogleAuthProvider();
+              try {
+                return await signInWithPopup(auth, provider);
+              } catch (err) {
+                if (POPUP_FALLBACK_CODES.has(err?.code)) {
+                  console.warn("popup sign-in failed, falling back to redirect:", err?.code);
+                  await signInWithRedirect(auth, provider);
+                  return null; // redirect navigates away
+                }
+                throw err;
+              }
+            },
             signOut: () => signOut(auth),
             getIdToken: async () => {
               const u = auth.currentUser;
