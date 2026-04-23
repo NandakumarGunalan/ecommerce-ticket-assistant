@@ -122,6 +122,28 @@ def test_healthz_not_loaded(unloaded_client):
     assert r.json()["detail"] == "model not loaded"
 
 
+def test_health_alias_ok(client):
+    # ``/health`` is a Cloud-Run-friendly alias for ``/healthz`` (GFE
+    # intercepts ``*/healthz``). Must return the same shape.
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["model_version"] == "2"
+    assert body["model_run_id"] == "run-test"
+
+    # Confirm identical shape to /healthz.
+    r_z = client.get("/healthz")
+    assert r_z.status_code == 200
+    assert set(body.keys()) == set(r_z.json().keys())
+
+
+def test_health_alias_not_loaded(unloaded_client):
+    r = unloaded_client.get("/health")
+    assert r.status_code == 503
+    assert r.json()["detail"] == "model not loaded"
+
+
 # ---------------------------------------------------------------------------
 # /predict happy path
 # ---------------------------------------------------------------------------

@@ -25,6 +25,8 @@ def test_create_ticket_persists_both_rows(client, db, model_stub):
     assert body["model_version"] == "2"
     assert body["latency_ms"] == 42
     assert "created_at" in body
+    # Original ticket text should round-trip in the response.
+    assert body["text"] == "my order never arrived"
 
     # DB actually has it.
     listed = db.list_tickets()
@@ -107,6 +109,9 @@ def test_list_tickets_sorted_by_priority_then_created_desc(client, db):
     assert r.status_code == 200
     got = r.json()
     priorities = [item["predicted_priority"] for item in got]
+    # Every listed ticket must carry its original text through.
+    for item in got:
+        assert item["text"] == f"t-{item['predicted_priority']}"
     # urgent > high > medium > low; newest urgent first among the two urgents.
     assert priorities == ["urgent", "urgent", "high", "medium", "low"]
     # Within urgents: newest first.
