@@ -1,0 +1,23 @@
+# Cloud Build config for the frontend static site image.
+#
+# Matches the backend pattern: `$SHORT_SHA` is defaulted via substitutions so
+# that both trigger-based and `gcloud builds submit` invocations work.
+substitutions:
+  _SHORT_SHA: manual
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - frontend/Dockerfile
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/ticket-frontend:latest
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/ticket-frontend:${_SHORT_SHA}
+      - .
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/ticket-frontend:latest
+  - us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/ticket-frontend:${_SHORT_SHA}
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 900s

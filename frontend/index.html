@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ecommerce Ticket Console</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -89,14 +90,23 @@
                   <dd id="confidence-value">--</dd>
                 </div>
                 <div>
-                  <dt>Category</dt>
-                  <dd id="category-value">--</dd>
-                </div>
-                <div>
                   <dt>Model</dt>
                   <dd id="model-value">--</dd>
                 </div>
+                <div>
+                  <dt>Ticket ID</dt>
+                  <dd id="ticket-id-value">--</dd>
+                </div>
               </dl>
+
+              <div class="feedback-row" id="feedback-row" hidden>
+                <span class="feedback-label">Was this prediction right?</span>
+                <div class="feedback-buttons">
+                  <button class="feedback-btn" type="button" data-verdict="thumbs_up" id="feedback-up">&#128077;</button>
+                  <button class="feedback-btn" type="button" data-verdict="thumbs_down" id="feedback-down">&#128078;</button>
+                </div>
+                <span class="feedback-thanks hidden" id="feedback-thanks">Thanks for the feedback.</span>
+              </div>
             </div>
           </aside>
         </section>
@@ -108,14 +118,14 @@
             <p class="eyebrow">Ingested Tickets</p>
             <h2>Sorted by priority</h2>
           </div>
-          <button class="text-button" type="button" id="clear-tickets-button">Clear tickets</button>
+          <button class="text-button" type="button" id="refresh-tickets-button">Refresh</button>
         </div>
 
         <div class="ticket-list" id="ticket-list"></div>
 
         <div class="empty-state tickets-empty" id="tickets-empty">
           <p>No tickets ingested yet.</p>
-          <span>Classified tickets will be saved here locally and sorted by urgency.</span>
+          <span>Classified tickets are persisted by the backend and appear here sorted by urgency.</span>
         </div>
       </section>
     </main>
