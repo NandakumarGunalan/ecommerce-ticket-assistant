@@ -68,10 +68,19 @@ class TicketPredictionRecord:
 # ---------------------------------------------------------------------------
 
 
+class NotFoundError(LookupError):
+    """Raised when a row does not exist OR the user has no access to it.
+
+    Subclasses ``LookupError`` so legacy callers that catch ``LookupError``
+    (e.g. for 404 translation in the API layer) continue to work.
+    """
+
+
 class DBClient(Protocol):
     def insert_ticket_and_prediction(
         self,
         *,
+        user_id: str,
         ticket_text: str,
         predicted_priority: str,
         confidence: float,
@@ -82,18 +91,33 @@ class DBClient(Protocol):
         source: str = "paste",
     ) -> TicketPredictionRecord: ...
 
-    def list_tickets(self, limit: int = 50) -> List[TicketPredictionRecord]: ...
+    def list_tickets(
+        self, user_id: str, limit: int = 50
+    ) -> List[TicketPredictionRecord]: ...
 
     def insert_feedback(
         self,
         *,
         prediction_id: str,
+        user_id: str,
         verdict: str,
         note: Optional[str] = None,
     ) -> tuple[str, datetime]:
         """Return (feedback_id, created_at).
 
-        Raises ``LookupError`` if ``prediction_id`` does not exist.
+        Raises ``NotFoundError`` if ``prediction_id`` does not exist, or
+        if the prediction's ticket does not belong to ``user_id``. The
+        two cases collapse to a single 404 at the API layer so a user
+        can't probe for other users' prediction ids.
+        """
+
+    def increment_and_get(
+        self, user_id: str, window_start_minute: datetime
+    ) -> int:
+        """Atomically increment the per-user rate-limit counter.
+
+        Satisfies :class:`backend.api.rate_limit.RateLimitStore` structurally
+        so a ``DBClient`` can be passed directly to ``make_rate_limit_dep``.
         """
 
     def close(self) -> None: ...
@@ -116,11 +140,13 @@ class InMemoryDBClient:
         self._tickets: Dict[str, Dict[str, Any]] = {}
         self._predictions: Dict[str, Dict[str, Any]] = {}
         self._feedback: Dict[str, Dict[str, Any]] = {}
+        self._rate_counts: Dict[tuple[str, datetime], int] = {}
         self._lock = RLock()
 
     def insert_ticket_and_prediction(
         self,
         *,
+        user_id: str,
         ticket_text: str,
         predicted_priority: str,
         confidence: float,
@@ -136,6 +162,7 @@ class InMemoryDBClient:
             now = datetime.now(timezone.utc)
             self._tickets[ticket_id] = {
                 "id": ticket_id,
+                "user_id": user_id,
                 "text": ticket_text,
                 "source": source,
                 "created_at": now,
@@ -164,7 +191,9 @@ class InMemoryDBClient:
                 latency_ms=latency_ms,
             )
 
-    def list_tickets(self, limit: int = 50) -> List[TicketPredictionRecord]:
+    def list_tickets(
+        self, user_id: str, limit: int = 50
+    ) -> List[TicketPredictionRecord]:
         with self._lock:
             # Group predictions by ticket and pick most-recent per ticket.
             latest_by_ticket: Dict[str, Dict[str, Any]] = {}
@@ -176,6 +205,8 @@ class InMemoryDBClient:
 
             records: List[TicketPredictionRecord] = []
             for ticket_id, ticket in self._tickets.items():
+                if ticket.get("user_id") != user_id:
+                    continue
                 pred = latest_by_ticket.get(ticket_id)
                 records.append(
                     TicketPredictionRecord(
@@ -203,12 +234,21 @@ class InMemoryDBClient:
         self,
         *,
         prediction_id: str,
+        user_id: str,
         verdict: str,
         note: Optional[str] = None,
     ) -> tuple[str, datetime]:
         with self._lock:
-            if prediction_id not in self._predictions:
-                raise LookupError(
+            pred = self._predictions.get(prediction_id)
+            if pred is None:
+                raise NotFoundError(
+                    f"prediction_id {prediction_id} does not exist"
+                )
+            ticket = self._tickets.get(pred["ticket_id"])
+            if ticket is None or ticket.get("user_id") != user_id:
+                # Collapse "not yours" into "not found" to avoid leaking
+                # existence of other users' prediction ids.
+                raise NotFoundError(
                     f"prediction_id {prediction_id} does not exist"
                 )
             feedback_id = str(uuid.uuid4())
@@ -231,6 +271,15 @@ class InMemoryDBClient:
             if p is None:
                 return None
             return dict(p)
+
+    def increment_and_get(
+        self, user_id: str, window_start_minute: datetime
+    ) -> int:
+        """Satisfy the ``RateLimitStore`` protocol in-process."""
+        with self._lock:
+            key = (user_id, window_start_minute)
+            self._rate_counts[key] = self._rate_counts.get(key, 0) + 1
+            return self._rate_counts[key]
 
     def close(self) -> None:  # pragma: no cover — nothing to close
         return None
@@ -306,6 +355,7 @@ class PostgresDBClient:
     def insert_ticket_and_prediction(
         self,
         *,
+        user_id: str,
         ticket_text: str,
         predicted_priority: str,
         confidence: float,
@@ -324,8 +374,8 @@ class PostgresDBClient:
         """
         insert_ticket_sql = self._text(
             """
-            INSERT INTO tickets (text, source)
-            VALUES (:text, :source)
+            INSERT INTO tickets (text, source, user_id)
+            VALUES (:text, :source, :user_id)
             RETURNING id, created_at
             """
         )
@@ -345,7 +395,11 @@ class PostgresDBClient:
         with self._engine.begin() as conn:
             t_row = conn.execute(
                 insert_ticket_sql,
-                {"text": ticket_text, "source": source},
+                {
+                    "text": ticket_text,
+                    "source": source,
+                    "user_id": user_id,
+                },
             ).one()
             ticket_id = str(t_row[0])
             ticket_created_at = t_row[1]
@@ -380,15 +434,24 @@ class PostgresDBClient:
         self,
         *,
         prediction_id: str,
+        user_id: str,
         verdict: str,
         note: Optional[str] = None,
     ) -> tuple[str, datetime]:
-        # Existence check first so we can return a clean 404 at the API
-        # layer. Doing this inside the same transaction avoids a TOCTOU
-        # gap where the prediction is deleted between the check and the
-        # insert.
+        # Existence + ownership check first so we can return a clean 404
+        # at the API layer. Doing this inside the same transaction avoids
+        # a TOCTOU gap where the prediction is deleted between the check
+        # and the insert. The JOIN ensures the prediction's ticket belongs
+        # to ``user_id``; a mismatch collapses to "not found" so we don't
+        # leak the existence of other users' prediction ids.
         check_sql = self._text(
-            "SELECT 1 FROM predictions WHERE id = CAST(:pid AS UUID)"
+            """
+            SELECT 1
+            FROM predictions p
+            JOIN tickets t ON t.id = p.ticket_id
+            WHERE p.id = CAST(:pid AS UUID)
+              AND t.user_id = :user_id
+            """
         )
         insert_sql = self._text(
             """
@@ -398,9 +461,11 @@ class PostgresDBClient:
             """
         )
         with self._engine.begin() as conn:
-            exists = conn.execute(check_sql, {"pid": prediction_id}).first()
+            exists = conn.execute(
+                check_sql, {"pid": prediction_id, "user_id": user_id}
+            ).first()
             if exists is None:
-                raise LookupError(
+                raise NotFoundError(
                     f"prediction_id {prediction_id} does not exist"
                 )
             row = conn.execute(
@@ -415,8 +480,10 @@ class PostgresDBClient:
 
     # -- reads --------------------------------------------------------------
 
-    def list_tickets(self, limit: int = 50) -> List[TicketPredictionRecord]:
-        """Join tickets to most-recent prediction.
+    def list_tickets(
+        self, user_id: str, limit: int = 50
+    ) -> List[TicketPredictionRecord]:
+        """Join tickets to most-recent prediction, scoped to ``user_id``.
 
         The DISTINCT ON pattern is Postgres-idiomatic: sort by
         ``(ticket_id, created_at DESC)`` and keep only the first row per
@@ -447,6 +514,7 @@ class PostgresDBClient:
                 lp.latency_ms
             FROM tickets t
             LEFT JOIN latest_pred lp ON lp.ticket_id = t.id
+            WHERE t.user_id = :user_id
             ORDER BY
                 CASE lp.predicted_priority
                     WHEN 'urgent' THEN 0
@@ -460,7 +528,9 @@ class PostgresDBClient:
             """
         )
         with self._engine.connect() as conn:
-            rows = conn.execute(sql, {"limit": int(limit)}).all()
+            rows = conn.execute(
+                sql, {"limit": int(limit), "user_id": user_id}
+            ).all()
 
         records: List[TicketPredictionRecord] = []
         for r in rows:
@@ -485,6 +555,39 @@ class PostgresDBClient:
                 )
             )
         return records
+
+    # -- rate limit --------------------------------------------------------
+
+    def increment_and_get(
+        self, user_id: str, window_start_minute: datetime
+    ) -> int:
+        """Atomic upsert on ``rate_limit_counters``.
+
+        The ``(user_id, window_start_minute)`` primary key turns this into
+        an atomic increment even under concurrent requests — the
+        ``ON CONFLICT`` branch takes a row-level lock on the existing row
+        and ``RETURNING count`` yields the post-update value.
+
+        Note: ``rate_limit_counters`` and ``tickets.user_id`` are
+        introduced in Wave 3; this SQL is written against the target
+        schema and should not be exercised against a real DB until that
+        migration lands.
+        """
+        sql = self._text(
+            """
+            INSERT INTO rate_limit_counters (user_id, window_start_minute, count)
+            VALUES (:user_id, :window, 1)
+            ON CONFLICT (user_id, window_start_minute)
+            DO UPDATE SET count = rate_limit_counters.count + 1
+            RETURNING count
+            """
+        )
+        with self._engine.begin() as conn:
+            row = conn.execute(
+                sql,
+                {"user_id": user_id, "window": window_start_minute},
+            ).one()
+        return int(row[0])
 
     # -- lifecycle ----------------------------------------------------------
 

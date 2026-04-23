@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.api.auth import User, current_user_dep
 from backend.api.db_client import InMemoryDBClient
 from backend.api.model_client import ModelEndpointError
 from backend.api.main import app, get_db, get_model_client
@@ -97,6 +98,16 @@ def db() -> InMemoryDBClient:
 
 
 @pytest.fixture
+def stub_user() -> User:
+    """Default authenticated user for tests that don't care about identity."""
+    return User(
+        uid="test-user-1",
+        email="test@example.com",
+        display_name="Test User",
+    )
+
+
+@pytest.fixture
 def model_stub() -> StubModelClient:
     return StubModelClient(
         predict_response=_default_predict_response(),
@@ -106,18 +117,27 @@ def model_stub() -> StubModelClient:
 
 @pytest.fixture
 def client(
-    db: InMemoryDBClient, model_stub: StubModelClient
+    db: InMemoryDBClient,
+    model_stub: StubModelClient,
+    stub_user: User,
 ) -> TestClient:
-    """TestClient with the two external deps overridden.
+    """TestClient with external deps overridden, auth stubbed.
 
     We do NOT enter the TestClient as a context manager here — that
     would trigger the ``@app.on_event("startup")`` hook which tries to
-    build a real ModelClient and contact Secret Manager. Dependency
-    overrides plus a bare TestClient are enough to exercise every
-    handler.
+    build a real ModelClient, contact Secret Manager, and initialize
+    Firebase. Dependency overrides plus a bare TestClient are enough to
+    exercise every handler.
+
+    ``current_user_dep`` is overridden to return ``stub_user`` so every
+    request authenticates as the fixed identity without a Firebase token.
+    The rate-limit dep is NOT overridden — it uses ``db.increment_and_get``,
+    and ``InMemoryDBClient``'s counter resets per-test (fresh ``db``
+    fixture) and won't trip the 50/minute cap in any normal suite.
     """
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_model_client] = lambda: model_stub
+    app.dependency_overrides[current_user_dep] = lambda: stub_user
     try:
         yield TestClient(app)
     finally:
