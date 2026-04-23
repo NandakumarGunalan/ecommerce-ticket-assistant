@@ -524,6 +524,12 @@ dd {
 }
 
 /* ---------- Auth gate ---------- */
+/* [hidden] must beat display:flex; HTML's hidden attribute sets display:none
+   via the UA stylesheet, which any explicit display rule overrides. */
+[hidden] {
+  display: none !important;
+}
+
 .auth-gate {
   display: flex;
   align-items: center;
