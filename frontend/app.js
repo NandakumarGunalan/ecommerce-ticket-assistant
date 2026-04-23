@@ -171,6 +171,10 @@ async function authedFetch(path, options = {}) {
 
   if (!useMockApi) {
     if (response.status === 401) {
+      // Read the body for diagnostics before deciding what to do.
+      let bodyText = "";
+      try { bodyText = await response.clone().text(); } catch (_) { /* ignore */ }
+      console.warn("[authedFetch] 401 from", url, "body:", bodyText);
       showToast("Session expired. Please sign in again.", "danger");
       try {
         if (window.__firebase) await window.__firebase.signOut();
@@ -472,6 +476,7 @@ function initAuth() {
       return;
     }
     fb.onAuthStateChanged((user) => {
+      console.log("[auth] onAuthStateChanged fired, user:", user && user.email);
       if (user) onSignedIn(user);
       else onSignedOut();
     });

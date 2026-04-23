@@ -8,8 +8,8 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <!-- Sign-in gate, shown when signed out (and not in mock mode) -->
-    <div id="auth-gate" class="auth-gate" hidden>
+    <!-- Sign-in gate, shown by default during auth init; hidden once signed in. -->
+    <div id="auth-gate" class="auth-gate">
       <div class="auth-card">
         <p class="eyebrow">Ecommerce Support</p>
         <h1 class="auth-title">Ticket Triage</h1>
@@ -180,19 +180,23 @@
           const fbApp = initializeApp(cfg.FIREBASE_CONFIG);
           const auth = getAuth(fbApp);
 
-          // If we're returning from a redirect-based sign-in, resolve it.
-          getRedirectResult(auth).catch((err) => {
-            console.warn("getRedirectResult error (safe to ignore on first load):", err);
-          });
-
-          const POPUP_FALLBACK_CODES = new Set([
-            "auth/popup-blocked",
-            "auth/popup-closed-by-user",
-            "auth/cancelled-popup-request",
-            "auth/operation-not-supported-in-this-environment",
-            "auth/web-storage-unsupported",
-            "auth/internal-error",
-          ]);
+          console.log("[auth] firebase initialized, awaiting getRedirectResult...");
+          // CRITICAL: we must AWAIT getRedirectResult before subscribing to
+          // onAuthStateChanged. Otherwise the listener can fire with null
+          // before the redirect result has been processed, and the app
+          // bounces the user back to the sign-in gate (infinite loop).
+          let redirectResult = null;
+          try {
+            redirectResult = await getRedirectResult(auth);
+            if (redirectResult && redirectResult.user) {
+              console.log("[auth] getRedirectResult resolved user:", redirectResult.user.uid, redirectResult.user.email);
+            } else {
+              console.log("[auth] getRedirectResult returned null (no pending redirect, or already consumed)");
+            }
+          } catch (err) {
+            console.error("[auth] getRedirectResult error:", err && err.code, err && err.message, err);
+            window.__firebaseRedirectError = err;
+          }
 
           window.__firebase = {
             auth,
@@ -201,6 +205,7 @@
               // Cloud Run's default COOP=same-origin blocks popup->opener postMessage,
               // so we use signInWithRedirect (full-page redirect to Google and back).
               const provider = new GoogleAuthProvider();
+              console.log("[auth] starting signInWithRedirect...");
               await signInWithRedirect(auth, provider);
               return null; // redirect navigates away
             },
@@ -211,6 +216,7 @@
               return await u.getIdToken();
             },
           };
+          console.log("[auth] dispatching firebase-ready, currentUser:", auth.currentUser && auth.currentUser.email);
           window.dispatchEvent(new CustomEvent("firebase-ready"));
         } catch (err) {
           console.error("Firebase init failed", err);
