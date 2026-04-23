@@ -132,7 +132,7 @@ class ModelClient:
         }
 
     def healthz(self) -> Dict[str, Any]:
-        url = f"{self._endpoint_url}/healthz"
+        url = f"{self._endpoint_url}/health"
         try:
             resp = self._http_client.get(url, headers=self._auth_headers())
         except httpx.HTTPError as exc:
@@ -150,7 +150,7 @@ class ModelClient:
                 endpoint=url,
             )
             raise ModelEndpointError(
-                f"model /healthz returned {resp.status_code}",
+                f"model /health returned {resp.status_code}",
                 status_code=resp.status_code,
             )
         return resp.json()
