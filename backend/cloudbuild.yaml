@@ -1,0 +1,25 @@
+# Cloud Build config for the backend API image.
+#
+# `$SHORT_SHA` is populated only when Cloud Build is invoked from a trigger
+# tied to a source repo. When running `gcloud builds submit` locally the
+# variable is empty, which produces an invalid image name. We default it
+# via `substitutions` so both invocation paths work.
+substitutions:
+  _SHORT_SHA: manual
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - backend/Dockerfile
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/ticket-backend-api:latest
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/ticket-backend-api:${_SHORT_SHA}
+      - .
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/ticket-backend-api:latest
+  - us-central1-docker.pkg.dev/$PROJECT_ID/ml-repo/ticket-backend-api:${_SHORT_SHA}
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 900s
