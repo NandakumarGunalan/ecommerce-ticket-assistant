@@ -65,6 +65,12 @@ def _install_cors(application: FastAPI) -> None:
         CORSMiddleware,
         allow_origins=[
             "https://ticket-frontend-48533944424.us-central1.run.app",
+            # Firebase Hosting origins — same-origin as the Firebase auth
+            # handler (/__/auth/handler), which avoids the cross-site
+            # storage partitioning that broke signInWithRedirect on
+            # the Cloud Run origin.
+            "https://msds-603-victors-demons.web.app",
+            "https://msds-603-victors-demons.firebaseapp.com",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
         ],
