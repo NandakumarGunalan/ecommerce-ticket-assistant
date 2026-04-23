@@ -7,7 +7,10 @@ window.TICKET_CONSOLE_CONFIG = {
     // signInWithRedirect lands on /__/auth/handler on the SAME origin
     // as the app. This avoids cross-site storage partitioning that
     // prevents getRedirectResult from reading the credential.
-    authDomain: "msds-603-victors-demons.web.app",
+    // Use .firebaseapp.com (not .web.app) because the default OAuth client's
+    // redirect URI is registered for firebaseapp.com. Both hostnames serve
+    // the same Firebase Hosting site, so app users hit .firebaseapp.com too.
+    authDomain: "msds-603-victors-demons.firebaseapp.com",
     projectId: "msds-603-victors-demons",
     appId: "1:48533944424:web:1caab7a98902277a3823dd",
     messagingSenderId: "48533944424",
