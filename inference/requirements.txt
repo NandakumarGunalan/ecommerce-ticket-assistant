@@ -1,0 +1,17 @@
+# CPU-only torch wheel: use PyTorch's CPU index as an extra source so pip picks
+# the CPU build of torch==2.8.0 instead of the default CUDA-enabled wheel.
+# If CUDA (nvidia-*) packages reappear in the resolve plan, switch this to
+# `--index-url https://download.pytorch.org/whl/cpu` for a more aggressive
+# CPU-only pin.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.8.0
+transformers==4.46.3
+google-cloud-aiplatform==1.71.1
+google-cloud-storage==2.18.2
+pg8000==1.31.2
+cloud-sql-python-connector[pg8000]==1.13.0
+sqlalchemy==2.0.36
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
