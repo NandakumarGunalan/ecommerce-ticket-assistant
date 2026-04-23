@@ -149,6 +149,7 @@ def _record_to_schema(record: TicketPredictionRecord) -> TicketRecord:
     """
     return TicketRecord(
         ticket_id=record.ticket_id,
+        text=record.text,
         prediction_id=record.prediction_id,
         predicted_priority=record.predicted_priority or "unknown",
         confidence=record.confidence,

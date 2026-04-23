@@ -55,6 +55,7 @@ class TicketRecord(BaseModel):
     """
 
     ticket_id: str
+    text: str
     prediction_id: Optional[str] = None
     predicted_priority: str
     confidence: Optional[float] = None

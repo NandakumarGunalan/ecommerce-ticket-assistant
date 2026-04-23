@@ -52,6 +52,7 @@ class TicketPredictionRecord:
     """
 
     ticket_id: str
+    text: str
     created_at: datetime
     prediction_id: Optional[str]
     predicted_priority: Optional[str]
@@ -152,6 +153,7 @@ class InMemoryDBClient:
             }
             return TicketPredictionRecord(
                 ticket_id=ticket_id,
+                text=ticket_text,
                 created_at=now,
                 prediction_id=prediction_id,
                 predicted_priority=predicted_priority,
@@ -178,6 +180,7 @@ class InMemoryDBClient:
                 records.append(
                     TicketPredictionRecord(
                         ticket_id=ticket_id,
+                        text=ticket["text"],
                         created_at=ticket["created_at"],
                         prediction_id=pred["id"] if pred else None,
                         predicted_priority=pred["predicted_priority"] if pred else None,
@@ -362,6 +365,7 @@ class PostgresDBClient:
 
         return TicketPredictionRecord(
             ticket_id=ticket_id,
+            text=ticket_text,
             created_at=ticket_created_at,
             prediction_id=prediction_id,
             predicted_priority=predicted_priority,
@@ -432,6 +436,7 @@ class PostgresDBClient:
             )
             SELECT
                 t.id AS ticket_id,
+                t.text AS ticket_text,
                 t.created_at AS ticket_created_at,
                 lp.prediction_id,
                 lp.predicted_priority,
@@ -459,7 +464,7 @@ class PostgresDBClient:
 
         records: List[TicketPredictionRecord] = []
         for r in rows:
-            scores_raw = r[5]
+            scores_raw = r[6]
             if isinstance(scores_raw, str):
                 scores: Optional[Dict[str, float]] = json.loads(scores_raw)
             else:
@@ -468,14 +473,15 @@ class PostgresDBClient:
             records.append(
                 TicketPredictionRecord(
                     ticket_id=str(r[0]),
-                    created_at=r[1],
-                    prediction_id=str(r[2]) if r[2] is not None else None,
-                    predicted_priority=r[3],
-                    confidence=float(r[4]) if r[4] is not None else None,
+                    text=r[1],
+                    created_at=r[2],
+                    prediction_id=str(r[3]) if r[3] is not None else None,
+                    predicted_priority=r[4],
+                    confidence=float(r[5]) if r[5] is not None else None,
                     all_scores=scores,
-                    model_version=r[6],
-                    model_run_id=r[7],
-                    latency_ms=int(r[8]) if r[8] is not None else None,
+                    model_version=r[7],
+                    model_run_id=r[8],
+                    latency_ms=int(r[9]) if r[9] is not None else None,
                 )
             )
         return records
