@@ -187,10 +187,19 @@ def _call_model_or_502(
 
 
 @app.get("/healthz", response_model=HealthResponse)
+@app.get("/health", response_model=HealthResponse)
 def healthz(
     model: ModelClient = Depends(get_model_client),
 ) -> HealthResponse:
-    """Passthrough to the model endpoint's ``/healthz``."""
+    """Passthrough to the model endpoint's ``/healthz``.
+
+    Registered at BOTH ``/healthz`` and ``/health``: Cloud Run's ingress
+    intercepts ``/healthz`` for some service configurations and never
+    forwards the request to the container (returns Google's generic
+    HTML 404 instead of FastAPI's JSON 404). ``/health`` is the alias
+    the frontend / smoke tests should use; ``/healthz`` remains for
+    callers that already bind to the kubernetes-idiomatic path.
+    """
     try:
         info = model.healthz()
     except ModelEndpointError as exc:

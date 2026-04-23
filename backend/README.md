@@ -15,7 +15,8 @@ HTTP layer that:
 
 | Method | Path                | Shape                                                       |
 | ------ | ------------------- | ----------------------------------------------------------- |
-| GET    | `/healthz`          | Passthrough of the model endpoint's `/healthz`              |
+| GET    | `/health`           | Passthrough of the model endpoint's `/healthz` (preferred)  |
+| GET    | `/healthz`          | Same, but Cloud Run's ingress intercepts this path          |
 | POST   | `/predict`          | Stateless score — no DB write                               |
 | POST   | `/tickets`          | Score + INSERT ticket + INSERT prediction                   |
 | GET    | `/tickets?limit=50` | Latest prediction per ticket, sorted by priority rank       |
@@ -115,7 +116,7 @@ gcloud run services add-iam-policy-binding distilbert-priority-online \
 URL=$(gcloud run services describe ticket-backend-api \
   --region=us-central1 --project=msds-603-victors-demons \
   --format='value(status.url)')
-curl "$URL/healthz"
+curl "$URL/health"   # /healthz also defined, but GFE may intercept it
 curl -H "Content-Type: application/json" -d '{"ticket_text":"my order never arrived"}' "$URL/predict"
 curl -H "Content-Type: application/json" -d '{"ticket_text":"my order never arrived"}' "$URL/tickets"
 curl "$URL/tickets?limit=10"
