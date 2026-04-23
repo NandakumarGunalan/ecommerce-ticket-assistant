@@ -54,7 +54,13 @@ def _log_online_prediction(payload: Dict[str, Any]) -> None:
 
 
 @app.get("/healthz", response_model=HealthResponse)
+@app.get("/health", response_model=HealthResponse)
 def healthz() -> HealthResponse:
+    # NOTE: ``/health`` is an alias for ``/healthz``. Cloud Run's Google Front
+    # End intercepts paths ending in ``/healthz`` before they reach the
+    # container (returning a Google HTML 404), so external probes (e.g. the
+    # backend's ``/health`` proxy) must use ``/health`` instead. ``/healthz``
+    # is preserved for any existing in-cluster / internal callers.
     if not _model_state["loaded"]:
         raise HTTPException(status_code=503, detail="model not loaded")
     info = model_loader.load_model()
