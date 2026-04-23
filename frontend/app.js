@@ -3,6 +3,16 @@ const apiBaseUrl = (config.API_BASE_URL || "http://127.0.0.1:8001").replace(/\/$
 const forceMock = new URLSearchParams(window.location.search).get("mock") === "true";
 let useMockApi = forceMock || Boolean(config.USE_MOCK_API);
 
+// ---------- DOM ----------
+const authGate = document.querySelector("#auth-gate");
+const appMain = document.querySelector("#app-main");
+const userBar = document.querySelector("#user-bar");
+const userEmailEl = document.querySelector("#user-email");
+const btnSignIn = document.querySelector("#btn-sign-in");
+const btnSignOut = document.querySelector("#btn-sign-out");
+const authError = document.querySelector("#auth-error");
+const toastContainer = document.querySelector("#toast-container");
+
 const form = document.querySelector("#ticket-form");
 const textarea = document.querySelector("#ticket-text");
 const clearButton = document.querySelector("#clear-button");
@@ -33,6 +43,8 @@ const priorityClasses = ["low", "medium", "high", "urgent", "unknown"];
 
 let currentPredictionId = null;
 let cachedTickets = [];
+let currentUser = null;
+let appBooted = false;
 
 // ---------- Mock state ----------
 const mockTickets = [
@@ -121,13 +133,76 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function showToast(message, tone = "info", ttl = 4000) {
+  if (!toastContainer) return;
+  const el = document.createElement("div");
+  el.className = `toast toast--${tone}`;
+  el.textContent = message;
+  toastContainer.appendChild(el);
+  setTimeout(() => {
+    el.classList.add("toast--fade");
+    setTimeout(() => el.remove(), 300);
+  }, ttl);
+}
+
+// ---------- authedFetch ----------
+async function authedFetch(path, options = {}) {
+  const url = path.startsWith("http") ? path : `${apiBaseUrl}${path}`;
+  const headers = new Headers(options.headers || {});
+  if (options.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  if (!useMockApi) {
+    const fb = window.__firebase;
+    if (fb) {
+      try {
+        const token = await fb.getIdToken();
+        if (token) {
+          headers.set("Authorization", `Bearer ${token}`);
+        }
+      } catch (err) {
+        console.warn("Failed to get ID token", err);
+      }
+    }
+  }
+
+  const response = await fetch(url, { ...options, headers });
+
+  if (!useMockApi) {
+    if (response.status === 401) {
+      showToast("Session expired. Please sign in again.", "danger");
+      try {
+        if (window.__firebase) await window.__firebase.signOut();
+      } catch (_) { /* ignore */ }
+      throw new Error("unauthorized");
+    }
+    if (response.status === 429) {
+      showToast("Slow down — limit is 50 req/min.", "warn");
+      throw new Error("rate_limited");
+    }
+  }
+
+  return response;
+}
+
 // ---------- API calls ----------
 async function apiHealth() {
   if (useMockApi) {
     return { status: "ok", model_version: "mock", model_run_id: "mock" };
   }
+  // /health is public — no auth required, but harmless to go through authedFetch.
   const response = await fetch(`${apiBaseUrl}/health`);
   if (!response.ok) throw new Error(`Health check failed with ${response.status}`);
+  return response.json();
+}
+
+async function apiMe() {
+  if (useMockApi) {
+    return { uid: "mock-user", email: "mock@example.com", display_name: "Mock User" };
+  }
+  const response = await authedFetch(`/me`);
+  if (!response.ok) throw new Error(`/me failed with ${response.status}`);
   return response.json();
 }
 
@@ -152,9 +227,8 @@ async function apiCreateTicket(ticketText) {
     return ticket;
   }
 
-  const response = await fetch(`${apiBaseUrl}/tickets`, {
+  const response = await authedFetch(`/tickets`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ticket_text: ticketText }),
   });
 
@@ -173,7 +247,7 @@ async function apiListTickets(limit = 50) {
   if (useMockApi) {
     return [...mockTickets].slice(0, limit);
   }
-  const response = await fetch(`${apiBaseUrl}/tickets?limit=${limit}`);
+  const response = await authedFetch(`/tickets?limit=${limit}`);
   if (!response.ok) throw new Error(`List tickets failed with ${response.status}`);
   return response.json();
 }
@@ -186,9 +260,8 @@ async function apiSendFeedback(predictionId, verdict) {
       created_at: new Date().toISOString(),
     };
   }
-  const response = await fetch(`${apiBaseUrl}/feedback`, {
+  const response = await authedFetch(`/feedback`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prediction_id: predictionId, verdict }),
   });
   if (!response.ok) throw new Error(`Feedback failed with ${response.status}`);
@@ -333,6 +406,133 @@ async function checkHealth() {
   }
 }
 
+// ---------- Auth flow ----------
+function showAuthGate() {
+  authGate.hidden = false;
+  appMain.hidden = true;
+  if (userBar) userBar.hidden = true;
+}
+
+function showAppUI(user) {
+  authGate.hidden = true;
+  appMain.hidden = false;
+  if (userBar) {
+    userBar.hidden = false;
+    userEmailEl.textContent = user?.email || user?.displayName || "signed in";
+  }
+}
+
+async function onSignedIn(user) {
+  currentUser = user;
+  showAppUI(user);
+  if (!appBooted) {
+    appBooted = true;
+    updateCharacterCount();
+  }
+  // Confirm token/session with backend /me, then run initial loads.
+  try {
+    if (!useMockApi) {
+      const me = await apiMe();
+      if (me && (me.display_name || me.email) && userEmailEl) {
+        userEmailEl.textContent = me.email || me.display_name;
+      }
+    }
+  } catch (err) {
+    console.warn("/me check failed", err);
+    // If /me failed with unauthorized, authedFetch already signed the user out.
+    return;
+  }
+
+  await checkHealth();
+  await refreshTickets();
+}
+
+function onSignedOut() {
+  currentUser = null;
+  showAuthGate();
+}
+
+function initAuth() {
+  if (useMockApi) {
+    // Synthesize a fake user and jump straight into the app.
+    const fake = { uid: "mock-user", email: "mock@example.com", displayName: "Mock User" };
+    onSignedIn(fake);
+    return;
+  }
+
+  const bind = () => {
+    const fb = window.__firebase;
+    if (!fb) {
+      // Firebase failed to load. Show the gate with an error.
+      showAuthGate();
+      if (authError) {
+        authError.hidden = false;
+        authError.textContent = "Authentication service failed to load. Check console.";
+      }
+      return;
+    }
+    fb.onAuthStateChanged((user) => {
+      if (user) onSignedIn(user);
+      else onSignedOut();
+    });
+  };
+
+  if (window.__firebase) {
+    bind();
+  } else {
+    window.addEventListener("firebase-ready", bind, { once: true });
+    window.addEventListener("firebase-error", () => {
+      showAuthGate();
+      if (authError) {
+        authError.hidden = false;
+        authError.textContent = "Authentication service failed to load. Check console.";
+      }
+    }, { once: true });
+  }
+}
+
+// ---------- Event wiring ----------
+if (btnSignIn) {
+  btnSignIn.addEventListener("click", async () => {
+    if (useMockApi) return;
+    const fb = window.__firebase;
+    if (!fb) {
+      showToast("Auth not ready. Try again in a moment.", "danger");
+      return;
+    }
+    btnSignIn.disabled = true;
+    try {
+      await fb.signIn();
+    } catch (err) {
+      console.warn("Sign-in failed", err);
+      if (authError) {
+        authError.hidden = false;
+        authError.textContent = `Sign-in failed: ${err?.message || err}`;
+      }
+    } finally {
+      btnSignIn.disabled = false;
+    }
+  });
+}
+
+if (btnSignOut) {
+  btnSignOut.addEventListener("click", async () => {
+    if (useMockApi) {
+      // In mock mode just reload to re-enter the fake user state.
+      onSignedOut();
+      setTimeout(() => onSignedIn({ uid: "mock-user", email: "mock@example.com", displayName: "Mock User" }), 50);
+      return;
+    }
+    const fb = window.__firebase;
+    if (!fb) return;
+    try {
+      await fb.signOut();
+    } catch (err) {
+      console.warn("Sign-out failed", err);
+    }
+  });
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = textarea.value.trim();
@@ -404,6 +604,6 @@ refreshTicketsButton.addEventListener("click", () => {
   refreshTickets();
 });
 
-updateCharacterCount();
-checkHealth();
-refreshTickets();
+// ---------- Boot ----------
+setModeLabel();
+initAuth();
