@@ -61,6 +61,7 @@ class TicketPredictionRecord:
     model_version: Optional[str]
     model_run_id: Optional[str]
     latency_ms: Optional[int]
+    resolved_at: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +93,28 @@ class DBClient(Protocol):
     ) -> TicketPredictionRecord: ...
 
     def list_tickets(
-        self, user_id: str, limit: int = 50
+        self,
+        user_id: str,
+        limit: int = 50,
+        include_resolved: bool = False,
     ) -> List[TicketPredictionRecord]: ...
+
+    def resolve_ticket(
+        self, ticket_id: str, user_id: str
+    ) -> TicketPredictionRecord:
+        """Mark ticket as resolved (``resolved_at = now()``).
+
+        Raises :class:`NotFoundError` if no row matches
+        ``id = ticket_id AND user_id = user_id``. Returns the updated
+        record joined with its most-recent prediction, same shape as
+        ``list_tickets``.
+        """
+
+    def unresolve_ticket(
+        self, ticket_id: str, user_id: str
+    ) -> TicketPredictionRecord:
+        """Clear resolved flag (``resolved_at = NULL``). Same semantics as
+        :meth:`resolve_ticket`."""
 
     def insert_feedback(
         self,
@@ -166,6 +187,7 @@ class InMemoryDBClient:
                 "text": ticket_text,
                 "source": source,
                 "created_at": now,
+                "resolved_at": None,
             }
             self._predictions[prediction_id] = {
                 "id": prediction_id,
@@ -192,7 +214,10 @@ class InMemoryDBClient:
             )
 
     def list_tickets(
-        self, user_id: str, limit: int = 50
+        self,
+        user_id: str,
+        limit: int = 50,
+        include_resolved: bool = False,
     ) -> List[TicketPredictionRecord]:
         with self._lock:
             # Group predictions by ticket and pick most-recent per ticket.
@@ -207,6 +232,8 @@ class InMemoryDBClient:
             for ticket_id, ticket in self._tickets.items():
                 if ticket.get("user_id") != user_id:
                     continue
+                if not include_resolved and ticket.get("resolved_at") is not None:
+                    continue
                 pred = latest_by_ticket.get(ticket_id)
                 records.append(
                     TicketPredictionRecord(
@@ -220,6 +247,7 @@ class InMemoryDBClient:
                         model_version=pred["model_version"] if pred else None,
                         model_run_id=pred["model_run_id"] if pred else None,
                         latency_ms=pred["latency_ms"] if pred else None,
+                        resolved_at=ticket.get("resolved_at"),
                     )
                 )
             records.sort(
@@ -229,6 +257,55 @@ class InMemoryDBClient:
                 )
             )
             return records[:limit]
+
+    def _build_record_for_ticket(
+        self, ticket_id: str
+    ) -> TicketPredictionRecord:
+        """Build a combined record for a single ticket_id (caller holds lock)."""
+        ticket = self._tickets[ticket_id]
+        latest: Optional[Dict[str, Any]] = None
+        for pred in self._predictions.values():
+            if pred["ticket_id"] != ticket_id:
+                continue
+            if latest is None or pred["created_at"] > latest["created_at"]:
+                latest = pred
+        return TicketPredictionRecord(
+            ticket_id=ticket_id,
+            text=ticket["text"],
+            created_at=ticket["created_at"],
+            prediction_id=latest["id"] if latest else None,
+            predicted_priority=latest["predicted_priority"] if latest else None,
+            confidence=latest["confidence"] if latest else None,
+            all_scores=dict(latest["all_scores"]) if latest else None,
+            model_version=latest["model_version"] if latest else None,
+            model_run_id=latest["model_run_id"] if latest else None,
+            latency_ms=latest["latency_ms"] if latest else None,
+            resolved_at=ticket.get("resolved_at"),
+        )
+
+    def resolve_ticket(
+        self, ticket_id: str, user_id: str
+    ) -> TicketPredictionRecord:
+        with self._lock:
+            ticket = self._tickets.get(ticket_id)
+            if ticket is None or ticket.get("user_id") != user_id:
+                raise NotFoundError(
+                    f"ticket_id {ticket_id} does not exist"
+                )
+            ticket["resolved_at"] = datetime.now(timezone.utc)
+            return self._build_record_for_ticket(ticket_id)
+
+    def unresolve_ticket(
+        self, ticket_id: str, user_id: str
+    ) -> TicketPredictionRecord:
+        with self._lock:
+            ticket = self._tickets.get(ticket_id)
+            if ticket is None or ticket.get("user_id") != user_id:
+                raise NotFoundError(
+                    f"ticket_id {ticket_id} does not exist"
+                )
+            ticket["resolved_at"] = None
+            return self._build_record_for_ticket(ticket_id)
 
     def insert_feedback(
         self,
@@ -481,7 +558,10 @@ class PostgresDBClient:
     # -- reads --------------------------------------------------------------
 
     def list_tickets(
-        self, user_id: str, limit: int = 50
+        self,
+        user_id: str,
+        limit: int = 50,
+        include_resolved: bool = False,
     ) -> List[TicketPredictionRecord]:
         """Join tickets to most-recent prediction, scoped to ``user_id``.
 
@@ -490,9 +570,17 @@ class PostgresDBClient:
         ``ticket_id``. Ordering for the final response is applied in the
         outer query using a CASE expression that maps each priority
         string to its rank.
+
+        By default only open tickets (``resolved_at IS NULL``) are
+        returned. Pass ``include_resolved=True`` to include both open
+        and resolved tickets; the caller then styles resolved rows
+        visually.
         """
+        resolved_clause = (
+            "" if include_resolved else " AND t.resolved_at IS NULL"
+        )
         sql = self._text(
-            """
+            f"""
             WITH latest_pred AS (
                 SELECT DISTINCT ON (ticket_id)
                     ticket_id, id AS prediction_id,
@@ -511,10 +599,11 @@ class PostgresDBClient:
                 lp.all_scores,
                 lp.model_version,
                 lp.model_run_id,
-                lp.latency_ms
+                lp.latency_ms,
+                t.resolved_at AS ticket_resolved_at
             FROM tickets t
             LEFT JOIN latest_pred lp ON lp.ticket_id = t.id
-            WHERE t.user_id = :user_id
+            WHERE t.user_id = :user_id{resolved_clause}
             ORDER BY
                 CASE lp.predicted_priority
                     WHEN 'urgent' THEN 0
@@ -552,9 +641,114 @@ class PostgresDBClient:
                     model_version=r[7],
                     model_run_id=r[8],
                     latency_ms=int(r[9]) if r[9] is not None else None,
+                    resolved_at=r[10],
                 )
             )
         return records
+
+    def _fetch_ticket_record(
+        self, ticket_id: str, user_id: str
+    ) -> TicketPredictionRecord:
+        """Return a single ticket + latest prediction for ``ticket_id``
+        scoped to ``user_id``. Raises :class:`NotFoundError` if absent.
+        Caller is responsible for the surrounding transaction if any.
+        """
+        sql = self._text(
+            """
+            WITH latest_pred AS (
+                SELECT DISTINCT ON (ticket_id)
+                    ticket_id, id AS prediction_id,
+                    predicted_priority, confidence, all_scores,
+                    model_version, model_run_id, latency_ms, created_at
+                FROM predictions
+                WHERE ticket_id = CAST(:tid AS UUID)
+                ORDER BY ticket_id, created_at DESC
+            )
+            SELECT
+                t.id,
+                t.text,
+                t.created_at,
+                lp.prediction_id,
+                lp.predicted_priority,
+                lp.confidence,
+                lp.all_scores,
+                lp.model_version,
+                lp.model_run_id,
+                lp.latency_ms,
+                t.resolved_at
+            FROM tickets t
+            LEFT JOIN latest_pred lp ON lp.ticket_id = t.id
+            WHERE t.id = CAST(:tid AS UUID) AND t.user_id = :user_id
+            """
+        )
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sql, {"tid": ticket_id, "user_id": user_id}
+            ).first()
+        if row is None:
+            raise NotFoundError(
+                f"ticket_id {ticket_id} does not exist"
+            )
+        scores_raw = row[6]
+        if isinstance(scores_raw, str):
+            scores: Optional[Dict[str, float]] = json.loads(scores_raw)
+        else:
+            scores = scores_raw if scores_raw is not None else None
+        return TicketPredictionRecord(
+            ticket_id=str(row[0]),
+            text=row[1],
+            created_at=row[2],
+            prediction_id=str(row[3]) if row[3] is not None else None,
+            predicted_priority=row[4],
+            confidence=float(row[5]) if row[5] is not None else None,
+            all_scores=scores,
+            model_version=row[7],
+            model_run_id=row[8],
+            latency_ms=int(row[9]) if row[9] is not None else None,
+            resolved_at=row[10],
+        )
+
+    def resolve_ticket(
+        self, ticket_id: str, user_id: str
+    ) -> TicketPredictionRecord:
+        update_sql = self._text(
+            """
+            UPDATE tickets
+            SET resolved_at = now()
+            WHERE id = CAST(:tid AS UUID) AND user_id = :user_id
+            RETURNING id
+            """
+        )
+        with self._engine.begin() as conn:
+            row = conn.execute(
+                update_sql, {"tid": ticket_id, "user_id": user_id}
+            ).first()
+            if row is None:
+                raise NotFoundError(
+                    f"ticket_id {ticket_id} does not exist"
+                )
+        return self._fetch_ticket_record(ticket_id, user_id)
+
+    def unresolve_ticket(
+        self, ticket_id: str, user_id: str
+    ) -> TicketPredictionRecord:
+        update_sql = self._text(
+            """
+            UPDATE tickets
+            SET resolved_at = NULL
+            WHERE id = CAST(:tid AS UUID) AND user_id = :user_id
+            RETURNING id
+            """
+        )
+        with self._engine.begin() as conn:
+            row = conn.execute(
+                update_sql, {"tid": ticket_id, "user_id": user_id}
+            ).first()
+            if row is None:
+                raise NotFoundError(
+                    f"ticket_id {ticket_id} does not exist"
+                )
+        return self._fetch_ticket_record(ticket_id, user_id)
 
     # -- rate limit --------------------------------------------------------
 

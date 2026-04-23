@@ -134,6 +134,25 @@ def log_feedback_recorded(
     )
 
 
+def log_ticket_resolution_change(
+    logger: logging.Logger,
+    *,
+    event: str,
+    ticket_id: str,
+    user_id: str,
+) -> None:
+    """Emit ``ticket_resolved`` / ``ticket_unresolved`` structured events."""
+    _emit(
+        logger,
+        logging.INFO,
+        {
+            "event": event,
+            "ticket_id": ticket_id,
+            "user_id": user_id,
+        },
+    )
+
+
 def log_model_endpoint_error(
     logger: logging.Logger,
     *,

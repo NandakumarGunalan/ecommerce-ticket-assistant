@@ -203,6 +203,7 @@ def _record_to_schema(record: TicketPredictionRecord) -> TicketRecord:
         model_run_id=record.model_run_id,
         latency_ms=record.latency_ms,
         created_at=record.created_at,
+        resolved_at=record.resolved_at,
     )
 
 
@@ -325,11 +326,46 @@ def create_ticket(
 @app.get("/tickets", response_model=List[TicketRecord])
 def list_tickets(
     limit: int = Query(default=50, ge=1, le=500),
+    include_resolved: bool = Query(default=False),
     db: DBClient = Depends(get_db),
     user: User = Depends(rate_limited_user),
 ) -> List[TicketRecord]:
-    records = db.list_tickets(user_id=user.uid, limit=limit)
+    records = db.list_tickets(
+        user_id=user.uid, limit=limit, include_resolved=include_resolved
+    )
     return [_record_to_schema(r) for r in records]
+
+
+@app.post("/tickets/{ticket_id}/resolve", response_model=TicketRecord)
+def resolve_ticket(
+    ticket_id: str,
+    db: DBClient = Depends(get_db),
+    user: User = Depends(rate_limited_user),
+) -> TicketRecord:
+    try:
+        record = db.resolve_ticket(ticket_id=ticket_id, user_id=user.uid)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logging_utils.log_ticket_resolution_change(
+        _LOG, event="ticket_resolved", ticket_id=ticket_id, user_id=user.uid
+    )
+    return _record_to_schema(record)
+
+
+@app.post("/tickets/{ticket_id}/unresolve", response_model=TicketRecord)
+def unresolve_ticket(
+    ticket_id: str,
+    db: DBClient = Depends(get_db),
+    user: User = Depends(rate_limited_user),
+) -> TicketRecord:
+    try:
+        record = db.unresolve_ticket(ticket_id=ticket_id, user_id=user.uid)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logging_utils.log_ticket_resolution_change(
+        _LOG, event="ticket_unresolved", ticket_id=ticket_id, user_id=user.uid
+    )
+    return _record_to_schema(record)
 
 
 @app.post("/feedback", response_model=FeedbackResponse)

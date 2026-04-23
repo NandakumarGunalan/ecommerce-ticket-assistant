@@ -63,6 +63,12 @@ def main() -> None:
          r"status === 401"),
         ("handles 429 rate limit",
          r"status === 429"),
+        ("apiResolveTicket helper defined",
+         r"async function apiResolveTicket\("),
+        ("apiUnresolveTicket helper defined",
+         r"async function apiUnresolveTicket\("),
+        ("include_resolved query param in /tickets fetch",
+         r"/tickets\?limit=[^`]*include_resolved="),
     ]
 
     for label, pattern in checks:
@@ -112,6 +118,11 @@ def main() -> None:
     if not re.search(r"gstatic\.com/firebasejs/[^\"']*firebase-app", idx_src):
         fail("index.html does not import firebase-app from gstatic")
     print("ok: index.html imports firebase-app + firebase-auth from gstatic")
+
+    # Show-resolved toggle in the Tickets view header.
+    if "show-resolved-toggle" not in idx_src:
+        fail("index.html missing #show-resolved-toggle checkbox")
+    print("ok: index.html has #show-resolved-toggle")
 
     # Sign-in / sign-out UI wiring.
     for needle in ("btn-sign-in", "btn-sign-out", "auth-gate", "app-main"):
