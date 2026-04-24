@@ -1,6 +1,8 @@
 # pip-audit CVE ignore list — one ID per line. Lines starting with # are
 # comments. Reviewed quarterly; entries should have a TODO and rationale.
 #
-# transformers was bumped to 4.53.0 to clear the previously-ignored CVEs;
-# this file is intentionally empty. Add new entries below with a comment
-# explaining the rationale and a TODO for follow-up.
+# transformers 4.53.0 — only fix is in 5.0.0rc3 (release candidate, not
+# stable). Re-evaluate when transformers 5.x ships a stable release. Our
+# deployment only loads our own trained checkpoints from a private GCS
+# bucket, so the untrusted-model-loading exposure is low.
+GHSA-69w3-r845-3855
