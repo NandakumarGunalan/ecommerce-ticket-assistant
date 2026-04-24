@@ -77,7 +77,7 @@ class ModelClient:
         *,
         id_token_fetcher: Optional[_IDTokenFetcher] = None,
         http_client: Optional[httpx.Client] = None,
-        timeout_sec: float = 25.0,
+        timeout_sec: float = 75.0,
     ) -> None:
         # Strip trailing slash so audience matches what Cloud Run signs for.
         self._endpoint_url = endpoint_url.rstrip("/")
