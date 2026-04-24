@@ -27,6 +27,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov
+          # httpx required by starlette TestClient (used in tests)
+          pip install pytest pytest-cov httpx
       - name: Run pytest
         run: pytest tests/ -v --tb=short

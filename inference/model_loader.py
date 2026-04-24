@@ -67,7 +67,7 @@ def _parse_run_id_from_artifact_uri(artifact_uri: str) -> str:
     stripped = artifact_uri.rstrip("/")
     parts = stripped.split("/")
     if not parts:
-        raise ValueError(f"Cannot parse run_id from empty artifact_uri")
+        raise ValueError("Cannot parse run_id from empty artifact_uri")
     if parts[-1] == "model" and len(parts) >= 2:
         return parts[-2]
     # Fallback: if the URI does not end with /model, just take the last

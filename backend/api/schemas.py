@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.api.config import TICKET_TEXT_MAX_CHARS, VALID_VERDICTS
 
-
 # ---------------------------------------------------------------------------
 # Ticket / prediction shapes
 # ---------------------------------------------------------------------------

@@ -26,6 +26,4 @@ jobs:
         run: pip install pip-audit==2.7.3
       - name: Audit ${{ matrix.service }}
         run: |
-          # --strict makes any vuln (incl. unpinned) a failure; drop to warn-only
-          # if false positives become noisy.
-          pip-audit -r ${{ matrix.service }}/requirements.txt --disable-pip
+          pip-audit -r ${{ matrix.service }}/requirements.txt
