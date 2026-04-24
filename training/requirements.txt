@@ -5,6 +5,6 @@ accelerate==1.1.1
 scikit-learn==1.5.2
 pandas==2.2.3
 numpy==1.26.4
-google-cloud-aiplatform==1.71.1
+google-cloud-aiplatform==1.133.0
 google-cloud-storage==2.18.2
 gcsfs==2024.9.0

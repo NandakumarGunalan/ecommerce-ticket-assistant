@@ -26,4 +26,13 @@ jobs:
         run: pip install pip-audit==2.7.3
       - name: Audit ${{ matrix.service }}
         run: |
-          pip-audit -r ${{ matrix.service }}/requirements.txt
+          # Build --ignore-vuln args from .github/pip-audit-ignore.txt
+          # (skip blank lines and # comments). See that file for rationale.
+          IGNORE_ARGS=()
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            line="$(echo "$line" | xargs)"
+            [[ -z "$line" ]] && continue
+            IGNORE_ARGS+=(--ignore-vuln "$line")
+          done < .github/pip-audit-ignore.txt
+          pip-audit -r ${{ matrix.service }}/requirements.txt "${IGNORE_ARGS[@]}"
