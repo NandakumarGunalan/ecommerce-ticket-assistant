@@ -197,6 +197,28 @@ gcloud run deploy distilbert-priority-online \
   --project=msds-603-victors-demons
 ```
 
+### Startup CPU boost on the model endpoint
+
+The online service has `run.googleapis.com/startup-cpu-boost: true` set on the service — free cold-start acceleration (2x CPU during container startup, normal after). **`gcloud run deploy` preserves this annotation across deploys**, so routine redeploys don't lose it. It only gets cleared if someone runs `gcloud run services replace` with a YAML that omits it, or passes `--no-cpu-boost` explicitly.
+
+Verify after a deploy:
+
+```bash
+gcloud run services describe distilbert-priority-online \
+  --region=us-central1 --project=msds-603-victors-demons \
+  --format="value(spec.template.metadata.annotations.'run.googleapis.com/startup-cpu-boost')"
+# Expect: true
+```
+
+If it ever shows empty, re-enable:
+
+```bash
+gcloud beta run services update distilbert-priority-online \
+  --region=us-central1 --cpu-boost --project=msds-603-victors-demons
+```
+
+(Requires the `beta` component: `gcloud components install beta`.)
+
 Update the batch job image (job config stays put, just swap the image):
 
 ```bash
