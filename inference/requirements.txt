@@ -6,7 +6,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 torch==2.8.0
-transformers==4.46.3
+transformers==4.53.0
 google-cloud-aiplatform==1.133.0
 google-cloud-storage==2.18.2
 pg8000==1.31.5
