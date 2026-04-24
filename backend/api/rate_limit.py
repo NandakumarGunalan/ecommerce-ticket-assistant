@@ -19,7 +19,6 @@ from fastapi import Depends, HTTPException, status
 
 from backend.api.auth import User, current_user_dep
 
-
 DEFAULT_LIMIT_PER_MINUTE = 50
 
 

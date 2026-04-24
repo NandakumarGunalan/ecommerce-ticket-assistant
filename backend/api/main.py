@@ -31,7 +31,6 @@ from backend.api.db_client import (
 )
 from backend.api.logging_utils import get_logger
 from backend.api.model_client import ModelClient, ModelEndpointError
-from backend.api.rate_limit import make_rate_limit_dep
 from backend.api.schemas import (
     FeedbackRequest,
     FeedbackResponse,
