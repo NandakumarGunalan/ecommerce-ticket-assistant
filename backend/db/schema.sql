@@ -12,9 +12,12 @@ CREATE TABLE IF NOT EXISTS tickets (
     text TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'paste',  -- 'paste' | 'csv' | 'api'
     user_id TEXT NOT NULL,                 -- Firebase UID of the submitter
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at TIMESTAMPTZ NULL           -- NULL = open; set = resolved
 );
 CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON tickets(user_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_user_id_resolved_at
+    ON tickets(user_id, resolved_at);
 
 -- predictions: one per ticket per model run (a ticket can be re-scored)
 CREATE TABLE IF NOT EXISTS predictions (

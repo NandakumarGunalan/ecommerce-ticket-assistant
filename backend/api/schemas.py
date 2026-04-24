@@ -64,6 +64,7 @@ class TicketRecord(BaseModel):
     model_run_id: Optional[str] = None
     latency_ms: Optional[int] = None
     created_at: datetime
+    resolved_at: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------

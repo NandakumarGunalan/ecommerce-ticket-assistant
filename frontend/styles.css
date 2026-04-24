@@ -436,6 +436,82 @@ dd {
   margin-top: 8px;
 }
 
+.tickets-header__controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.show-resolved {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 560;
+  cursor: pointer;
+  user-select: none;
+}
+
+.show-resolved input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.ticket-item--resolved {
+  opacity: 0.55;
+  border-top-style: dashed;
+}
+
+.ticket-item--resolved:last-child {
+  border-bottom-style: dashed;
+}
+
+.ticket-item--resolved .ticket-item__text {
+  text-decoration: line-through;
+  text-decoration-color: var(--faint);
+}
+
+.resolved-badge {
+  display: inline-flex;
+  width: fit-content;
+  padding: 5px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--faint);
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.secondary-button {
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.86rem;
+  font-weight: 600;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.secondary-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.secondary-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.resolve-btn {
+  margin-left: auto;
+}
+
 .result-card--low .priority-value,
 .result-card--low .priority-band,
 .ticket-item--low .priority-chip {

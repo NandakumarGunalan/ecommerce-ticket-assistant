@@ -145,7 +145,13 @@
               <p class="eyebrow">Ingested Tickets</p>
               <h2>Sorted by priority</h2>
             </div>
-            <button class="text-button" type="button" id="refresh-tickets-button">Refresh</button>
+            <div class="tickets-header__controls">
+              <label class="show-resolved">
+                <input type="checkbox" id="show-resolved-toggle" />
+                <span>Show resolved</span>
+              </label>
+              <button class="text-button" type="button" id="refresh-tickets-button">Refresh</button>
+            </div>
           </div>
 
           <div class="ticket-list" id="ticket-list"></div>

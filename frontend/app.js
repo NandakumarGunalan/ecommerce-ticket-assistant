@@ -38,6 +38,7 @@ const ticketCount = document.querySelector("#ticket-count");
 const ticketList = document.querySelector("#ticket-list");
 const ticketsEmpty = document.querySelector("#tickets-empty");
 const refreshTicketsButton = document.querySelector("#refresh-tickets-button");
+const showResolvedToggle = document.querySelector("#show-resolved-toggle");
 
 const priorityClasses = ["low", "medium", "high", "urgent", "unknown"];
 
@@ -45,6 +46,7 @@ let currentPredictionId = null;
 let cachedTickets = [];
 let currentUser = null;
 let appBooted = false;
+let showResolved = false;
 
 // ---------- Mock state ----------
 const mockTickets = [
@@ -294,10 +296,41 @@ async function apiCreateTicket(ticketText) {
 
 async function apiListTickets(limit = 50) {
   if (useMockApi) {
-    return [...mockTickets].slice(0, limit);
+    const list = showResolved
+      ? [...mockTickets]
+      : mockTickets.filter((t) => !t.resolved_at);
+    return list.slice(0, limit);
   }
-  const response = await authedFetch(`/tickets?limit=${limit}`);
+  const response = await authedFetch(
+    `/tickets?limit=${limit}&include_resolved=${showResolved ? "true" : "false"}`,
+  );
   if (!response.ok) throw new Error(`List tickets failed with ${response.status}`);
+  return response.json();
+}
+
+async function apiResolveTicket(ticketId) {
+  if (useMockApi) {
+    const t = mockTickets.find((m) => m.ticket_id === ticketId);
+    if (t) t.resolved_at = new Date().toISOString();
+    return t;
+  }
+  const response = await authedFetch(`/tickets/${ticketId}/resolve`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error(`Resolve ticket failed with ${response.status}`);
+  return response.json();
+}
+
+async function apiUnresolveTicket(ticketId) {
+  if (useMockApi) {
+    const t = mockTickets.find((m) => m.ticket_id === ticketId);
+    if (t) t.resolved_at = null;
+    return t;
+  }
+  const response = await authedFetch(`/tickets/${ticketId}/unresolve`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error(`Unresolve ticket failed with ${response.status}`);
   return response.json();
 }
 
@@ -370,9 +403,12 @@ function renderTickets(tickets) {
 
   tickets.forEach((t) => {
     const priority = normalizePriority(t.predicted_priority);
+    const isResolved = Boolean(t.resolved_at);
     const item = document.createElement("article");
     item.className = `ticket-item ticket-item--${priority}`;
+    if (isResolved) item.classList.add("ticket-item--resolved");
     item.dataset.predictionId = t.prediction_id || "";
+    item.dataset.ticketId = t.ticket_id || "";
 
     const text = t.ticket_text || t.text || "";
     const confPct =
@@ -382,9 +418,15 @@ function renderTickets(tickets) {
       ? `<p class="ticket-item__text">${escapeHtml(truncateText(text, 200))}</p>`
       : `<p class="ticket-item__text ticket-item__text--empty">(no ticket text)</p>`;
 
+    const resolvedBadge = isResolved
+      ? `<span class="resolved-badge">Resolved</span>`
+      : "";
+    const resolveLabel = isResolved ? "Reopen" : "Resolve";
+
     item.innerHTML = `
       <div class="ticket-item__meta">
         <span class="priority-chip">${formatPriority(priority)}</span>
+        ${resolvedBadge}
         <span>${escapeHtml(shortDate(t.created_at))}</span>
       </div>
       ${textBlock}
@@ -397,6 +439,7 @@ function renderTickets(tickets) {
           <button class="feedback-btn" type="button" data-verdict="thumbs_up">&#128077;</button>
           <button class="feedback-btn" type="button" data-verdict="thumbs_down">&#128078;</button>
         </div>
+        <button class="secondary-button resolve-btn" type="button" data-action="${isResolved ? "unresolve" : "resolve"}">${resolveLabel}</button>
         <span class="feedback-thanks hidden">Thanks.</span>
       </div>
     `;
@@ -421,6 +464,27 @@ function renderTickets(tickets) {
         }
       });
     });
+
+    const resolveBtn = row.querySelector(".resolve-btn");
+    if (resolveBtn) {
+      resolveBtn.addEventListener("click", async () => {
+        const ticketId = item.dataset.ticketId;
+        if (!ticketId) return;
+        resolveBtn.disabled = true;
+        try {
+          if (resolveBtn.dataset.action === "resolve") {
+            await apiResolveTicket(ticketId);
+          } else {
+            await apiUnresolveTicket(ticketId);
+          }
+          await refreshTickets();
+        } catch (err) {
+          console.warn("Resolve/reopen failed", err);
+          resolveBtn.disabled = false;
+          showToast("Could not update ticket. Try again.", "danger");
+        }
+      });
+    }
 
     ticketList.appendChild(item);
   });
@@ -657,6 +721,13 @@ segments.forEach((segment) => {
 refreshTicketsButton.addEventListener("click", () => {
   refreshTickets();
 });
+
+if (showResolvedToggle) {
+  showResolvedToggle.addEventListener("change", () => {
+    showResolved = Boolean(showResolvedToggle.checked);
+    refreshTickets();
+  });
+}
 
 // ---------- Boot ----------
 setModeLabel();
