@@ -1,26 +1,40 @@
 # Backend API — `ticket-backend-api`
 
-FastAPI service deployed to Cloud Run. Public (no-auth) frontend-facing
-HTTP layer that:
+FastAPI service deployed to Cloud Run with public ingress but
+Firebase-Auth-gated routes. It is the frontend-facing HTTP layer that:
 
-1. Proxies the IAM-restricted model endpoint
+1. Verifies a Firebase ID token on every protected route (`firebase-admin`
+   via `verify_id_token`), extracts the caller's `uid` / `email` / `name`.
+2. Enforces a 50 req/min/user rate limit using a Postgres-backed counter
+   table (`rate_limit_counters`), returning `429` + `Retry-After: 60` on
+   breach.
+3. Proxies the IAM-restricted model endpoint
    (`distilbert-priority-online`) — attaches a Google-signed ID token on
    every request.
-2. Persists tickets / predictions / feedback to Cloud SQL Postgres
-   (instance `ticket-assistant-db`, db `ticket_assistant`).
-3. Emits structured JSON logs (`event=ticket_created`, `event=feedback_recorded`,
+4. Persists tickets / predictions / feedback to Cloud SQL Postgres
+   (instance `ticket-assistant-db`, db `ticket_assistant`). All reads and
+   writes are scoped by `user.uid`.
+5. Emits structured JSON logs (`event=ticket_created`, `event=feedback_recorded`,
+   `event=ticket_resolved`, `event=ticket_unresolved`,
    `event=model_endpoint_error`) that Cloud Run surfaces as `jsonPayload`.
 
 ## Endpoints
 
-| Method | Path                | Shape                                                       |
-| ------ | ------------------- | ----------------------------------------------------------- |
-| GET    | `/health`           | Passthrough of the model endpoint's `/healthz` (preferred)  |
-| GET    | `/healthz`          | Same, but Cloud Run's ingress intercepts this path          |
-| POST   | `/predict`          | Stateless score — no DB write                               |
-| POST   | `/tickets`          | Score + INSERT ticket + INSERT prediction                   |
-| GET    | `/tickets?limit=50` | Latest prediction per ticket, sorted by priority rank       |
-| POST   | `/feedback`         | Thumbs up/down against a `prediction_id`                    |
+Only `GET /health` is public; every other route requires
+`Authorization: Bearer <firebase_id_token>` and is subject to the 50
+req/min/user rate limit.
+
+| Method | Path                                          | Shape                                                                |
+| ------ | --------------------------------------------- | -------------------------------------------------------------------- |
+| GET    | `/health`                                     | Public. Passthrough of the model endpoint's `/healthz` (preferred).  |
+| GET    | `/healthz`                                    | Public alias; Cloud Run's ingress intercepts this path in some cfgs. |
+| GET    | `/me`                                         | `{uid, email, display_name}` from the verified token.                |
+| POST   | `/predict`                                    | Stateless score — no DB write.                                       |
+| POST   | `/tickets`                                    | Score + INSERT ticket + INSERT prediction, scoped to `user.uid`.     |
+| GET    | `/tickets?limit=50&include_resolved=false`    | Caller's tickets only, sorted by priority rank.                      |
+| POST   | `/tickets/{id}/resolve`                       | Mark the ticket resolved (owner-only).                               |
+| POST   | `/tickets/{id}/unresolve`                     | Clear `resolved_at`.                                                 |
+| POST   | `/feedback`                                   | Thumbs up/down against a `prediction_id`.                            |
 
 Validation: `ticket_text` is required, non-empty, ≤ 10,000 chars;
 `verdict` must be `thumbs_up` or `thumbs_down`.
@@ -134,10 +148,20 @@ gcloud logging read \
 
 ## CORS
 
-The service is currently public and allows `*` — fine while we have no
-auth and the frontend origin is in flux. When the frontend is pinned to
-a known URL, tighten `allow_origins` in `backend/api/main.py` and drop
-the wildcard.
+Because the frontend sends `Authorization: Bearer <token>` on every
+protected call, wildcard CORS is not viable — the browser must send
+credentials from a known origin. `_install_cors` in
+`backend/api/main.py` pins the allowlist to:
+
+- `https://msds-603-victors-demons.web.app`
+- `https://msds-603-victors-demons.firebaseapp.com`
+- `http://localhost:5173` / `http://127.0.0.1:5173`
+- (the now-deleted `ticket-frontend` Cloud Run URL, left in for revision
+  parity; safe to drop in a future cleanup)
+
+Firebase Hosting preview channels are **not** in the list. If you need
+to test against a preview channel, add its origin explicitly and
+redeploy the backend.
 
 ## File layout
 

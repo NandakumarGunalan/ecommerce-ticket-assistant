@@ -296,22 +296,31 @@ imported from gstatic.
 
 ## Deploying The Frontend
 
-Static container built with `frontend/Dockerfile` (Python `http.server`),
-deployed to Cloud Run as service `ticket-frontend`.
+The frontend is deployed to **Firebase Hosting** (site
+`msds-603-victors-demons`). `firebase.json` lives in this directory. No
+build step — static assets only.
 
 ```bash
-gcloud builds submit --config=frontend/cloudbuild.yaml \
-  --project=msds-603-victors-demons .
-
-gcloud run deploy ticket-frontend \
-  --image=us-central1-docker.pkg.dev/msds-603-victors-demons/ml-repo/ticket-frontend:latest \
-  --region=us-central1 \
-  --allow-unauthenticated \
-  --cpu=1 --memory=256Mi \
-  --min-instances=0 --max-instances=3 \
-  --concurrency=50 --timeout=30s \
-  --project=msds-603-victors-demons
+cd frontend
+firebase deploy --only hosting --project=msds-603-victors-demons
 ```
 
-The deployed frontend URL (`ticket-frontend-48533944424.us-central1.run.app`)
-is already on Firebase's authorized-domains list.
+Live URLs (both point at the same release):
+
+- `https://msds-603-victors-demons.firebaseapp.com`
+- `https://msds-603-victors-demons.web.app`
+
+Both are on Firebase Auth's authorized-domains list.
+
+The previous Cloud Run frontend service `ticket-frontend` has been
+**deleted**. `frontend/Dockerfile` and `frontend/cloudbuild.yaml` remain
+in the repo for historical reference only; do not redeploy them.
+
+To roll back a bad Hosting deploy:
+
+```bash
+firebase hosting:releases:list --site=msds-603-victors-demons \
+  --project=msds-603-victors-demons
+firebase hosting:rollback --site=msds-603-victors-demons \
+  --project=msds-603-victors-demons
+```

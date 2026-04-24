@@ -6,18 +6,21 @@ Project: `msds-603-victors-demons` — Region: `us-central1`
 
 ## Demo-day playbook
 
-Cloud Run services default to `--min-instances=0` to keep idle cost near zero. Cold starts on the model endpoint are 3-8 seconds (DistilBERT download + load). Pin min-instances ~1 hour before the demo to eliminate cold starts.
+Cloud Run services default to `--min-instances=0` to keep idle cost near zero. The model endpoint's cold start is 3-8 seconds (DistilBERT download + load), which is the one place where pinning min-instances ~1 hour before the demo is worth doing. The backend's cold start is sub-second, so it can stay at min=0.
+
+The frontend is now on **Firebase Hosting** — it's global CDN, no min-instances knob, nothing to pin.
 
 Before the demo:
 
 ```bash
 gcloud run services update distilbert-priority-online \
   --region=us-central1 --min-instances=1 --project=msds-603-victors-demons
+```
 
+(Optional — usually unnecessary.) Pin the backend too:
+
+```bash
 gcloud run services update ticket-backend-api \
-  --region=us-central1 --min-instances=1 --project=msds-603-victors-demons
-
-gcloud run services update ticket-frontend \
   --region=us-central1 --min-instances=1 --project=msds-603-victors-demons
 ```
 
@@ -29,61 +32,93 @@ gcloud run services update distilbert-priority-online \
 
 gcloud run services update ticket-backend-api \
   --region=us-central1 --min-instances=0 --project=msds-603-victors-demons
-
-gcloud run services update ticket-frontend \
-  --region=us-central1 --min-instances=0 --project=msds-603-victors-demons
 ```
 
-Cost of leaving all three pinned: roughly $15/month per service. Revert promptly after the demo.
+Cost of leaving the model endpoint pinned: roughly $15/month. Revert promptly after the demo.
+
+> Note: the previous Cloud Run frontend service `ticket-frontend` has been **deleted**. Do not try to pin or redeploy it.
 
 ## Smoke test the live system
 
-End-to-end check against the deployed Cloud Run services. Uses the same commands as the PR #10 / PR #13 verification passes.
+End-to-end check against the deployed Cloud Run services. Every route except `/health` requires a Firebase ID token.
+
+### Mint a test token
+
+There is no CLI-only path to mint a Firebase user ID token. The simplest route:
+
+1. Open the frontend (`https://msds-603-victors-demons.firebaseapp.com`) in a browser and sign in with Google.
+2. Open DevTools -> Console and run:
+   ```js
+   await window.__firebase.auth.currentUser.getIdToken()
+   ```
+3. Copy the returned JWT. Export it in your shell:
+   ```bash
+   export TOKEN='<paste-the-jwt-here>'
+   ```
+
+ID tokens expire after ~1 hour. If a curl starts returning `401`, refresh the page and repeat.
+
+### Curl sequence
 
 ```bash
 BACKEND=$(gcloud run services describe ticket-backend-api \
   --region=us-central1 --project=msds-603-victors-demons \
   --format='value(status.url)')
 
-# 1. Health (proxies model endpoint's /healthz; returns model_version)
+AUTH="Authorization: Bearer $TOKEN"
+JSON="Content-Type: application/json"
+
+# 1. Public health (no token; proxies the model endpoint's /healthz)
 curl -s "$BACKEND/health" | jq .
 
-# 2. Create a ticket (scores + persists)
-RESP=$(curl -s -H "Content-Type: application/json" \
+# 2. Confirm the token is accepted + see your decoded claims
+curl -s -H "$AUTH" "$BACKEND/me" | jq .
+
+# 3. Create a ticket (scores + persists, scoped to your uid)
+RESP=$(curl -s -H "$AUTH" -H "$JSON" \
   -d '{"ticket_text":"my order never arrived"}' "$BACKEND/tickets")
 echo "$RESP" | jq .
+TICKET_ID=$(echo "$RESP" | jq -r .ticket_id)
 PRED_ID=$(echo "$RESP" | jq -r .prediction_id)
 
-# 3. List recent tickets (priority-sorted)
-curl -s "$BACKEND/tickets?limit=10" | jq .
+# 4. List your recent tickets (priority-sorted; resolved hidden by default)
+curl -s -H "$AUTH" "$BACKEND/tickets?limit=10" | jq .
 
-# 4. Submit feedback on the prediction above
-curl -s -H "Content-Type: application/json" \
+# 5. Submit feedback on the prediction above
+curl -s -H "$AUTH" -H "$JSON" \
   -d "{\"prediction_id\":\"$PRED_ID\",\"verdict\":\"thumbs_up\"}" \
   "$BACKEND/feedback" | jq .
+
+# 6. Resolve the ticket
+curl -s -H "$AUTH" -X POST "$BACKEND/tickets/$TICKET_ID/resolve" | jq .
+
+# 7. Verify it is hidden by default and shown when include_resolved=true
+curl -s -H "$AUTH" "$BACKEND/tickets?limit=10" | jq '[.[] | .ticket_id]'
+curl -s -H "$AUTH" "$BACKEND/tickets?limit=10&include_resolved=true" | jq '[.[] | .ticket_id]'
+
+# 8. Reopen it
+curl -s -H "$AUTH" -X POST "$BACKEND/tickets/$TICKET_ID/unresolve" | jq .
 ```
 
-Hit the frontend in a browser at the URL in `README.md` and confirm the prediction, ticket list, and thumbs-up/down round-trip through the backend.
+Also hit the deployed frontend in a browser, sign in, create/resolve/reopen a ticket, and confirm the UI matches what the curls reported.
 
-Direct check of the model endpoint (requires an ID token — the backend does this automatically):
+Direct check of the model endpoint (IAM-restricted — uses a Google-signed ID token, not a Firebase token):
 
 ```bash
 MODEL_URL=$(gcloud run services describe distilbert-priority-online \
   --region=us-central1 --project=msds-603-victors-demons \
   --format='value(status.url)')
-TOKEN=$(gcloud auth print-identity-token --audiences="$MODEL_URL")
-curl -s -H "Authorization: Bearer $TOKEN" "$MODEL_URL/healthz"
-curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+GTOKEN=$(gcloud auth print-identity-token --audiences="$MODEL_URL")
+curl -s -H "Authorization: Bearer $GTOKEN" "$MODEL_URL/healthz"
+curl -s -H "Authorization: Bearer $GTOKEN" -H "Content-Type: application/json" \
   -d '{"ticket_text":"my order never arrived"}' "$MODEL_URL/predict"
 ```
 
 ## Deploy a change
 
-All three services share the same build-then-deploy shape: `gcloud builds submit` to push a new image to Artifact Registry, then `gcloud run deploy` to roll it out. Full env-var lists live in each subsystem's README.
-
 ### Backend (`ticket-backend-api`)
 
-Local dev loop — run tests with the in-memory DB stub:
+Local dev loop — run tests with the in-memory DB stub + stub verifier:
 
 ```bash
 .venv/bin/python -m pytest backend/tests -q
@@ -111,30 +146,27 @@ gcloud run deploy ticket-backend-api \
   --project=msds-603-victors-demons
 ```
 
-See `backend/README.md` for the full env-var list and CORS notes.
+`--allow-unauthenticated` is correct: Cloud Run ingress is public, but the app enforces Firebase ID-token auth on every route except `/health`. See `backend/README.md` for the full env-var list, CORS allowlist, and notes on the rate limiter.
 
-### Frontend (`ticket-frontend`)
+### Frontend (Firebase Hosting)
 
 Local dev loop:
 
 ```bash
 python3 -m http.server 5173 --directory frontend
+# http://127.0.0.1:5173  (localhost is on Firebase's authorized-domains list)
 ```
 
-Build and deploy:
+Deploy (no build step — static assets; `firebase.json` lives in `frontend/`):
 
 ```bash
-gcloud builds submit --config=frontend/cloudbuild.yaml \
-  --project=msds-603-victors-demons .
-
-gcloud run deploy ticket-frontend \
-  --image=us-central1-docker.pkg.dev/msds-603-victors-demons/ml-repo/ticket-frontend:latest \
-  --region=us-central1 --allow-unauthenticated \
-  --cpu=1 --memory=256Mi --min-instances=0 --max-instances=5 \
-  --project=msds-603-victors-demons
+cd frontend
+firebase deploy --only hosting --project=msds-603-victors-demons
 ```
 
-The backend URL the frontend talks to is baked into `frontend/config.js`. See `frontend/README.md`.
+The site URLs are `https://msds-603-victors-demons.firebaseapp.com` and `https://msds-603-victors-demons.web.app` (equivalent aliases). No custom domain configured.
+
+> The previous Cloud Run frontend service `ticket-frontend` has been **deleted**. Do not redeploy it. The `frontend/Dockerfile` and `frontend/cloudbuild.yaml` remain in the repo for historical reference only.
 
 ### Inference (`distilbert-priority-online` + `distilbert-priority-batch`)
 
@@ -192,12 +224,12 @@ Full procedure: `training/PLAN.md`. Three-bullet summary:
 
 ## Common ops
 
-View recent structured logs per service:
+### View recent structured logs per service
 
 ```bash
 # Backend (business events)
 gcloud logging read \
-  'resource.type="cloud_run_revision" AND resource.labels.service_name="ticket-backend-api" AND (jsonPayload.event="ticket_created" OR jsonPayload.event="feedback_recorded" OR jsonPayload.event="model_endpoint_error")' \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="ticket-backend-api" AND (jsonPayload.event="ticket_created" OR jsonPayload.event="feedback_recorded" OR jsonPayload.event="ticket_resolved" OR jsonPayload.event="ticket_unresolved" OR jsonPayload.event="model_endpoint_error")' \
   --limit=20 --project=msds-603-victors-demons --format=json
 
 # Model endpoint
@@ -211,7 +243,7 @@ gcloud logging read \
   --limit=20 --project=msds-603-victors-demons --format=json
 ```
 
-Rotate the app DB password:
+### Rotate the app DB password
 
 ```bash
 # 1. Generate a new password and update the user
@@ -234,37 +266,145 @@ unset NEW_PW
 
 Do not log or echo `$NEW_PW` to shared terminals.
 
-Connect to Cloud SQL locally: see `backend/db/README.md` for the Cloud SQL Auth Proxy recipe.
+### Connect to Cloud SQL locally
 
-Check what's deployed:
+See `backend/db/README.md` for the Cloud SQL Auth Proxy recipe.
+
+### Check what's deployed
 
 ```bash
 gcloud run services list --project=msds-603-victors-demons
 gcloud run revisions list --service=ticket-backend-api \
   --region=us-central1 --project=msds-603-victors-demons
+firebase hosting:sites:list --project=msds-603-victors-demons
 ```
+
+### User management (Firebase Auth)
+
+Firebase doesn't expose `gcloud`-level user management, but the Identity Toolkit REST API does. You need an OAuth2 access token for an account with Firebase admin rights:
+
+```bash
+# Log in once; the CLI caches a refresh token.
+firebase login
+
+# Extract the access token from the firebase-tools configstore.
+ACCESS_TOKEN=$(python3 -c '
+import json, pathlib
+p = pathlib.Path.home() / ".config" / "configstore" / "firebase-tools.json"
+print(json.loads(p.read_text())["tokens"]["access_token"])
+')
+
+PROJECT=msds-603-victors-demons
+
+# List users (first page, up to 1000)
+curl -s -X POST \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"returnUserInfo": true}' \
+  "https://identitytoolkit.googleapis.com/v1/projects/$PROJECT/accounts:query" | jq '.userInfo[] | {localId, email, displayName, createdAt}'
+
+# Delete a specific user by uid (repeat --data for multiple local IDs)
+curl -s -X POST \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"localIds":["<firebase-uid-to-delete>"]}' \
+  "https://identitytoolkit.googleapis.com/v1/projects/$PROJECT/accounts:batchDelete" | jq .
+
+unset ACCESS_TOKEN
+```
+
+Deleting a Firebase user does not cascade into our Postgres tables — their `tickets`, `predictions`, and `feedback` rows stay behind for retraining. To also drop their data:
+
+```sql
+DELETE FROM tickets WHERE user_id = '<firebase-uid>';
+-- predictions + feedback cascade via ON DELETE CASCADE
+DELETE FROM rate_limit_counters WHERE user_id = '<firebase-uid>';
+```
+
+### Bump the rate limit
+
+The default is 50 req/min/user, set as `DEFAULT_LIMIT_PER_MINUTE` in `backend/api/rate_limit.py`. Two options:
+
+- **Change the default** for all call sites: edit `DEFAULT_LIMIT_PER_MINUTE` in `backend/api/rate_limit.py`, rebuild, redeploy the backend (see "Deploy a change -> Backend" above).
+- **Change it at a specific attachment point**: pass `limit=N` to `make_rate_limit_dep(store, limit=N)`. Note that `backend/api/main.py` currently inlines the rate-limit logic in `rate_limited_user(...)` rather than calling `make_rate_limit_dep` (so it picks up `_state["db"]` via `Depends(get_db)` for test override compatibility); bumping there means editing the `DEFAULT_LIMIT_PER_MINUTE` reference in that function.
+
+### Check a user's open vs resolved ticket counts
+
+With a psql session open against `ticket_assistant` (see `backend/db/README.md` for the Auth Proxy recipe):
+
+```sql
+SELECT
+  user_id,
+  COUNT(*) FILTER (WHERE resolved_at IS NULL) AS open_tickets,
+  COUNT(*) FILTER (WHERE resolved_at IS NOT NULL) AS resolved_tickets
+FROM tickets
+GROUP BY user_id
+ORDER BY open_tickets DESC;
+
+-- Or for a specific user:
+SELECT id, resolved_at, created_at
+FROM tickets
+WHERE user_id = '<firebase-uid>'
+ORDER BY created_at DESC;
+```
+
+### Apply a new migration
+
+Migrations live in `backend/db/migrations/`. They are one-shot (unlike the idempotent `schema.sql`):
+
+```bash
+# Apply a specific migration file:
+bash backend/db/apply_migration.sh backend/db/migrations/002_add_ticket_resolved.sql
+
+# With no argument, the script applies 001_add_user_accounts.sql.
+```
+
+After applying, update `backend/db/schema.sql` so a fresh DB built with `apply_schema.sh` ends up in the same state.
 
 ## Known issues / tech debt
 
-- `/healthz` on the inference online service is intercepted by the Cloud Run GFE in some configurations. The backend now uses `/health` (the alias added in PR #13) to proxy through reliably.
-- Frontend and backend are both public (`--allow-unauthenticated`, CORS `*`). Fine for a class demo. Add IAM + OAuth + a pinned CORS origin before this is exposed to real users.
-- No retraining pipeline or scheduler is wired up. Retrains are manual via `training/launch.py`. Cloud Scheduler + Workflows would be a straightforward follow-up.
-- No monitoring dashboards. Structured logs exist; a Looker Studio view on top of the `predictions` and `feedback` tables would surface model quality over time.
-- CSV upload path (bulk ticket ingestion) is scoped out. Batch inference runs against whatever sits in the `tickets` table.
-- The frontend is not currently merged to `main`. It lives on `feature/frontend-integration`. Deploys happen from that branch until it's merged.
+- **`/healthz` is GFE-intercepted** on the Cloud Run backend for some service configurations. Use `/health` (the canonical alias) for smoke tests and uptime probes.
+- **CORS allowlist is fixed** to the prod Firebase Hosting origins + `localhost` (see `backend/api/main.py::_install_cors`). Firebase Hosting preview channels (`<site>--<channel>-<hash>.web.app`) are not in the list; add the preview origin to `_install_cors` and redeploy the backend before testing against a preview channel.
+- **No custom domain on Firebase Hosting** yet. The frontend ships at `.firebaseapp.com` / `.web.app`. Remediation: add the domain in Firebase Console -> Hosting -> Add custom domain, then add it to Firebase Auth's authorized-domains list and to the backend CORS allowlist.
+- **No automated retraining pipeline.** Retrains are manual via `.venv/bin/python training/launch.py`. Remediation: Cloud Scheduler -> Workflows -> the existing `launch.py` entry point would be a minimal follow-up.
+- **No monitoring dashboards** beyond Cloud Logging. Remediation: a Looker Studio view over `predictions` + `feedback` to show model quality over time.
+- **CSV upload path** (bulk ticket ingestion) is scoped out. Batch inference runs against whatever sits in the `tickets` table.
 
 ## Emergency: something is broken
 
-- Backend returns 502 on `/health` -> model endpoint is probably down or returning non-200. Check it:
+### Authentication failure modes
+
+- **Users stuck in a redirect loop on sign-in.** Should not happen any more — the frontend uses Google Identity Services + `signInWithCredential`, which does not go through the Firebase auth iframe or redirect flow. If it does recur: check `.claude/FIREBASE_AUTH_BUG.md` and the `.claude/diagnosis_*.md` files for the 2024-2025 Chrome storage-partitioning context. Most likely cause would be accidentally reintroducing `signInWithPopup` or `signInWithRedirect` to the code.
+- **Users get 401 on every call.** Check backend init logs for firebase_admin SDK failures:
+  ```bash
+  gcloud logging read \
+    'resource.type="cloud_run_revision" AND resource.labels.service_name="ticket-backend-api" AND severity>=ERROR' \
+    --limit=30 --project=msds-603-victors-demons --format=json
+  ```
+  Also check the browser's DevTools Network tab — if the CORS preflight (`OPTIONS`) is failing, the request origin is not in the backend allowlist. Fix: add the origin to `_install_cors` in `backend/api/main.py` and redeploy.
+- **Users get 429 immediately on first click.** The `rate_limit_counters` table has stuck rows. Either their minute window has drifted (unlikely — we use `datetime.now(timezone.utc).replace(second=0, microsecond=0)`) or something retried thousands of times and blew the cap. Inspect and, if necessary, truncate:
+  ```sql
+  SELECT user_id, window_start_minute, count
+  FROM rate_limit_counters
+  WHERE count > 50
+  ORDER BY count DESC LIMIT 20;
+
+  -- Nuclear option (safe; counters recreate themselves):
+  TRUNCATE rate_limit_counters;
+  ```
+
+### Service failure modes
+
+- **Backend returns 502 on `/health`** -> model endpoint is down or returning non-200. Check it:
   ```bash
   gcloud run services describe distilbert-priority-online \
     --region=us-central1 --project=msds-603-victors-demons
   ```
-  Then hit its `/healthz` directly with an ID token (see smoke test section).
-- Frontend shows "Endpoint unreachable" -> backend is down, CORS is misconfigured, or `/health` chain is broken. Open the browser devtools network tab and inspect the failing request.
-- `POST /tickets` returns 500 -> query Cloud Logging for `jsonPayload.event="model_endpoint_error"` on `ticket-backend-api`. Common causes: model endpoint cold-start timeout, expired ID token audience mismatch, DB write failure.
-- DB connections failing (`FATAL: password authentication failed for user "app_user"`) -> the `ticket-assistant-db-app-password` secret and the actual Postgres user password have drifted. Re-run the rotation steps above or re-run `backend/db/apply_schema.sh` which normalizes the `app_user` password to match the secret.
-- Cloud SQL instance status anything other than `RUNNABLE`:
+  Then hit its `/healthz` directly with a Google-signed ID token (see smoke-test section).
+- **Frontend shows "Endpoint unreachable"** -> backend is down, CORS is misconfigured for the current origin, or the `/health` chain is broken. Open DevTools Network and inspect the failing request.
+- **`POST /tickets` returns 500** -> query Cloud Logging for `jsonPayload.event="model_endpoint_error"` on `ticket-backend-api`. Common causes: model endpoint cold-start timeout, expired ID-token audience mismatch on the Google-signed token to the model, DB write failure.
+- **DB connections failing** (`FATAL: password authentication failed for user "app_user"`) -> the `ticket-assistant-db-app-password` secret and the actual Postgres user password have drifted. Re-run the rotation steps above, or re-run `backend/db/apply_schema.sh` which normalizes the `app_user` password to match the secret.
+- **Cloud SQL instance status anything other than `RUNNABLE`**:
   ```bash
   gcloud sql instances describe ticket-assistant-db --project=msds-603-victors-demons
   ```
@@ -273,9 +413,14 @@ gcloud run revisions list --service=ticket-backend-api \
   gcloud sql instances patch ticket-assistant-db \
     --activation-policy=ALWAYS --project=msds-603-victors-demons
   ```
-- Roll back a bad Cloud Run deploy to the previous revision:
+- **Roll back a bad Cloud Run deploy** to the previous revision:
   ```bash
   gcloud run services update-traffic ticket-backend-api \
     --to-revisions=<previous-revision-name>=100 \
     --region=us-central1 --project=msds-603-victors-demons
+  ```
+- **Roll back a bad Firebase Hosting deploy.** Firebase Hosting keeps release history:
+  ```bash
+  firebase hosting:releases:list --site=msds-603-victors-demons --project=msds-603-victors-demons
+  firebase hosting:rollback --site=msds-603-victors-demons --project=msds-603-victors-demons
   ```

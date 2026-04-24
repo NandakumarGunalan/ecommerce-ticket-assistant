@@ -1,10 +1,10 @@
 # Ecommerce Ticket Triage Assistant
 
-A multi-service GCP system that triages inbound customer-support tickets by predicted priority (low / medium / high / urgent). A support agent pastes a ticket into the web console, the backend routes it through a fine-tuned DistilBERT classifier served on Cloud Run, and the ticket + prediction + agent feedback are persisted to Cloud SQL Postgres for later retraining and analysis.
+A multi-service GCP system that triages inbound customer-support tickets by predicted priority (low / medium / high / urgent). A support agent signs in with Google, pastes a ticket into the web console, the backend routes it through a fine-tuned DistilBERT classifier served on Cloud Run, and the ticket + prediction + agent feedback are persisted to Cloud SQL Postgres — scoped to the authenticated user — for later retraining and analysis.
 
 ## Live URLs
 
-- Frontend: https://ticket-frontend-48533944424.us-central1.run.app
+- Frontend: https://msds-603-victors-demons.firebaseapp.com (Firebase Hosting — primary; `https://msds-603-victors-demons.web.app` is an equivalent alias)
 - Backend API: https://ticket-backend-api-48533944424.us-central1.run.app
 - Model endpoint: https://distilbert-priority-online-48533944424.us-central1.run.app (IAM-restricted; only the backend SA can invoke it)
 
@@ -17,57 +17,81 @@ A multi-service GCP system that triages inbound customer-support tickets by pred
                                 | HTTPS
                                 v
                  +--------------+---------------+
-                 |  ticket-frontend (Cloud Run) |
-                 |  static HTML/CSS/JS          |
-                 +--------------+---------------+
-                                | fetch JSON
-                                v
-          +---------------------+----------------------+
-          |    ticket-backend-api (Cloud Run, public)  |
-          |    FastAPI: /health /tickets /feedback     |
-          +----+-----------------------------+---------+
-               | ID token (run.invoker)      | Cloud SQL connector
-               v                             v
-   +-----------+------------+      +---------+-----------------+
-   | distilbert-priority-   |      |  Cloud SQL Postgres 15    |
-   | online (Cloud Run,     |      |  ticket-assistant-db      |
-   | IAM-restricted)        |      |  tickets / predictions /  |
-   +-----------+------------+      |  feedback                 |
-               | loads             +---------+-----------------+
-               v                             ^
-   +-----------+-------------+               |
-   | Vertex AI Model Registry|               |
-   | distilbert-priority     |               |
-   +-----------+-------------+               |
-               ^                             |
-               | registers                   | writes predictions
-   +-----------+-------------+     +---------+-----------------+
-   | training/ (Vertex AI    |     | distilbert-priority-batch |
-   | Custom Training on GPU) |     | (Cloud Run Job)           |
-   +-------------------------+     +---------------------------+
+                 |  Firebase Hosting            |
+                 |  static HTML/CSS/JS console  |
+                 +---+----------------------+---+
+                     |                      |
+        Google Sign-In (GIS) +              | fetch JSON + Bearer <Firebase ID token>
+        signInWithCredential                v
+                     |       +--------------+---------------+
+                     |       |  ticket-backend-api          |
+                     |       |  (Cloud Run, public ingress) |
+                     |       |  FastAPI + firebase-admin    |
+                     |       |  verifies ID token on every  |
+                     |       |  protected route, rate-limits|
+                     |       |  50 req/min/user, scopes all |
+                     |       |  DB ops by user.uid          |
+                     v       +---+-----------------------+--+
+          +----------+---+       | ID token (run.invoker)| Cloud SQL connector
+          | Firebase Auth|       v                       v
+          | (Google IdP) |  +----+---------------+  +----+----------------------+
+          +--------------+  | distilbert-        |  |  Cloud SQL Postgres 15    |
+                            | priority-online    |  |  ticket-assistant-db      |
+                            | (Cloud Run,        |  |  tickets (user_id,        |
+                            | IAM-restricted)    |  |    resolved_at) /         |
+                            +----+---------------+  |  predictions / feedback / |
+                                 | loads            |  rate_limit_counters      |
+                                 v                  +---+-----------------------+
+                            +----+----------------+     ^
+                            | Vertex AI Model Reg |     |
+                            | distilbert-priority |     |
+                            +----+----------------+     | writes predictions
+                                 ^                      |
+                                 | registers            |
+                            +----+----------------+  +--+--------------------------+
+                            | training/ (Vertex   |  | distilbert-priority-batch   |
+                            | AI Custom Training) |  | (Cloud Run Job, same image) |
+                            +---------------------+  +-----------------------------+
 ```
 
 ## Repo layout
 
-- `frontend/` — static HTML/CSS/JS console, served by Cloud Run Service `ticket-frontend`. (Lives on the `feature/frontend-integration` branch; not yet merged to `main`.)
-- `backend/` — FastAPI backend + DB schema + apply script. Cloud Run Service `ticket-backend-api`. See `backend/README.md` and `backend/db/README.md`.
+- `frontend/` — static HTML/CSS/JS console, deployed via Firebase Hosting (site `msds-603-victors-demons`). Authenticates users with Firebase Auth (Google Sign-In, GIS + `signInWithCredential`).
+- `backend/` — FastAPI backend + DB schema + migrations + apply scripts. Cloud Run Service `ticket-backend-api`. Verifies Firebase ID tokens, enforces per-user rate limits, scopes all DB operations by `user.uid`. See `backend/README.md` and `backend/db/README.md`.
 - `inference/` — model serving code (shared predictor core used by both online + batch). Cloud Run Service `distilbert-priority-online` and Cloud Run Job `distilbert-priority-batch`. See `inference/PLAN.md` and `inference/ONLINE_PLAN.md`.
 - `training/` — DistilBERT fine-tuning pipeline on Vertex AI Custom Training, registers to Vertex Model Registry. See `training/PLAN.md`.
 - `synthetic_data/` — synthetic ticket data generation (cross-product of issue/product/sentiment metadata + LLM-generated text). See `synthetic_data/PLAN.md`.
 - `scripts/` — legacy utility scripts (pre-GCP; retained for reference).
-- `tests/` — legacy top-level tests. Most tests now live next to the code they cover (`backend/tests`, `inference/tests`, `training/tests`, `synthetic_data/tests`).
+- `tests/` — legacy top-level tests. Most tests now live next to the code they cover (`backend/tests`, `inference/tests`, `training/tests`, `synthetic_data/tests`, `frontend/tests`).
 
 ## Data flow
 
-1. Agent pastes a customer ticket into the frontend and clicks classify.
-2. Frontend calls `POST /tickets` on the backend with `{ "ticket_text": "..." }`.
-3. Backend attaches a Google-signed ID token (audience = model endpoint URL) and calls the model endpoint's `POST /predict`.
-4. Model endpoint loads the DistilBERT artifacts from Vertex AI Model Registry on cold start, scores the ticket, and returns `{predicted_priority, confidence, all_scores, model_version, ...}`.
-5. Backend inserts a row into `tickets` and a row into `predictions`, returns the combined response to the frontend.
-6. Agent clicks thumbs up / thumbs down; frontend calls `POST /feedback` with the `prediction_id`, which writes to the `feedback` table.
-7. `GET /tickets?limit=50` returns the latest prediction per ticket, sorted urgent > high > medium > low, then newest first.
+1. User opens the frontend and signs in with Google. The page uses Google Identity Services (GIS) to fetch an access token, then exchanges it via `signInWithCredential` to obtain a Firebase session. (We do not use `signInWithPopup` / `signInWithRedirect` — see `frontend/README.md` for the storage-partitioning background.)
+2. On every protected call the frontend fetches a fresh Firebase ID token (`auth.currentUser.getIdToken()`) and attaches it as `Authorization: Bearer <token>`.
+3. The backend verifies the token with `firebase-admin` (`verify_id_token`), extracts `user.uid` / `email` / `name`, and runs a per-request rate-limit check against the Postgres-backed `rate_limit_counters` table (50 req/min/user; a 429 with `Retry-After: 60` is returned on breach).
+4. `POST /tickets`: backend calls the IAM-restricted model endpoint using a Google-signed ID token (audience = model endpoint URL), writes a `tickets` row and a `predictions` row scoped to `user.uid`, and returns the combined record.
+5. `GET /tickets`: returns the caller's tickets only; by default excludes rows with a non-null `resolved_at` (pass `?include_resolved=true` to include them). Sorted urgent > high > medium > low, then newest first.
+6. Tickets can be resolved (`POST /tickets/{id}/resolve`) and reopened (`POST /tickets/{id}/unresolve`); resolution state is stored as a `resolved_at` timestamp on the ticket row.
+7. `POST /feedback` records a thumbs-up / thumbs-down against a `prediction_id`.
 
 The Cloud Run Job `distilbert-priority-batch` is the same container image as the online service, invoked with a different entrypoint. It reads unscored tickets from Cloud SQL and writes predictions back in bulk. Not currently wired to a scheduler — invoke manually.
+
+## API surface
+
+All routes are served by `ticket-backend-api`. Only `GET /health` is public; every other route requires `Authorization: Bearer <firebase_id_token>` and is subject to the 50 req/min/user rate limit.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET  | `/health` | Public. Proxies the model endpoint's `/healthz`; returns `model_version`. |
+| GET  | `/me` | Authed. Returns `{uid, email, display_name}` from the verified token. |
+| POST | `/predict` | Authed. Stateless score — no DB write. |
+| POST | `/tickets` | Authed. Score + persist `tickets` + `predictions` rows scoped to `user.uid`. |
+| GET  | `/tickets?limit=50&include_resolved=false` | Authed. Caller's tickets only. `include_resolved` defaults to `false`. |
+| POST | `/tickets/{id}/resolve` | Authed. Marks the ticket resolved (owner-only). |
+| POST | `/tickets/{id}/unresolve` | Authed. Clears `resolved_at`. |
+| POST | `/feedback` | Authed. Thumbs up/down against a `prediction_id`. |
+
+The backend also registers `/healthz` as an alias to `/health`, but Cloud Run's ingress intercepts `/healthz` in some configurations — use `/health` for smoke tests.
 
 ## GCP inventory
 
@@ -78,21 +102,26 @@ Project ID: `msds-603-victors-demons` — Region: `us-central1`
 | Cloud SQL | `ticket-assistant-db` (Postgres 15, `db-f1-micro`, 10 GB) |
 | Cloud Run Service | `distilbert-priority-online` |
 | Cloud Run Service | `ticket-backend-api` |
-| Cloud Run Service | `ticket-frontend` |
 | Cloud Run Job | `distilbert-priority-batch` |
+| Firebase Hosting site | `msds-603-victors-demons` (default URLs: `.firebaseapp.com` + `.web.app`) |
+| Firebase Web App | `ticket-console` (App ID `1:48533944424:web:1caab7a98902277a3823dd`) |
+| Firebase Auth | Google provider; authorized domains include `localhost`, `msds-603-victors-demons.firebaseapp.com`, `msds-603-victors-demons.web.app` |
 | Vertex AI Model Registry | `distilbert-priority` (id `174724492281511936`) |
 | Artifact Registry | `ml-repo` (Docker) |
 | GCS bucket | `msds603-mlflow-artifacts` (data + model artifacts; bucket name is historical) |
 | Secret Manager | `ticket-assistant-db-root-password`, `ticket-assistant-db-app-password` |
 | Runtime SA | `inference-runner@msds-603-victors-demons.iam.gserviceaccount.com` |
+| Firebase Admin SA | `firebase-adminsdk-fbsvc@msds-603-victors-demons.iam.gserviceaccount.com` (used by the backend to verify ID tokens via ADC) |
 
 The runtime SA has `roles/cloudsql.client` project-wide, `roles/secretmanager.secretAccessor` on both DB secrets, and `roles/run.invoker` on `distilbert-priority-online`.
+
+> Note: the previous Cloud Run frontend service `ticket-frontend` has been **deleted**. The frontend is served by Firebase Hosting; do not redeploy the Cloud Run service.
 
 ## Quick start (local)
 
 Each service runs in its own terminal. Use the repo virtualenv at `.venv/`, not conda.
 
-Backend (mocked DB, no Postgres needed — tests only):
+Backend (mocked DB + stub model client, no Postgres needed — tests only):
 
 ```bash
 .venv/bin/python -m pytest backend/tests -q
@@ -100,13 +129,15 @@ Backend (mocked DB, no Postgres needed — tests only):
 
 Backend against live Cloud SQL: see `backend/README.md` — it documents the Cloud SQL Auth Proxy path and the env-var set.
 
-Frontend (static, no build):
+Frontend (static, no build). Canonical local dev loop uses Python's built-in HTTP server:
 
 ```bash
 python3 -m http.server 5173 --directory frontend
 # then open http://127.0.0.1:5173
-# force mock mode (no backend required): http://127.0.0.1:5173?mock=true
+# force mock mode (no backend, no sign-in): http://127.0.0.1:5173?mock=true
 ```
+
+`localhost` is already on Firebase's authorized-domains list, so Google Sign-In works out of the box. (`firebase emulators:start --only hosting` also works if you prefer the Firebase CLI — same static assets, same origin semantics.)
 
 Model endpoint (smoke test against the deployed Cloud Run service):
 
@@ -130,16 +161,18 @@ Training smoke test (CPU, tiny subset):
 - FastAPI, Uvicorn (backend + online inference)
 - PyTorch + HuggingFace `transformers` (DistilBERT fine-tune + serving)
 - Postgres 15 on Cloud SQL
+- Firebase Auth (Google Sign-In via GIS + `signInWithCredential`) + `firebase-admin` server-side token verification
+- Firebase Hosting (static frontend)
 - Vertex AI (Custom Training + Experiments + Model Registry)
 - Cloud Run (Services + Jobs)
 - Cloud Build + Artifact Registry (Docker images)
-- pytest (unit tests across `backend/`, `inference/`, `training/`, `synthetic_data/`)
+- pytest (unit tests across `backend/`, `inference/`, `training/`, `synthetic_data/`, `frontend/`)
 
 ## Subsystem docs
 
-- `backend/README.md` — FastAPI backend, routes, env vars, deploy commands
-- `backend/db/README.md` — Cloud SQL instance, schema, password rotation, Auth Proxy usage
-- `frontend/README.md` — static web console, backend contract, mock mode (lives on `feature/frontend-integration`)
+- `backend/README.md` — FastAPI backend, routes, env vars, auth, rate limiting, deploy commands
+- `backend/db/README.md` — Cloud SQL instance, schema, migrations, password rotation, Auth Proxy usage
+- `frontend/README.md` — static web console, Firebase Auth + GIS sign-in, backend contract, mock mode, Firebase Hosting deploy
 - `inference/PLAN.md` — batch inference design + DB-direct rationale
 - `inference/ONLINE_PLAN.md` — online endpoint design, IAM, demo-day playbook
 - `training/PLAN.md` — DistilBERT fine-tune pipeline on Vertex AI
@@ -151,9 +184,19 @@ Training smoke test (CPU, tiny subset):
 .venv/bin/python -m pytest backend/ inference/ training/ synthetic_data/
 ```
 
+## Known issues / tech debt
+
+- Cloud Run's ingress intercepts `/healthz` on some service configurations; the backend exposes `/health` as the canonical alias. Use `/health` for smoke tests and uptime probes.
+- Backend CORS allowlist is a fixed set of prod origins + `localhost` (see `backend/api/main.py`). Firebase Hosting preview channels (`<site>--<channel>-<hash>.web.app`) are not in the allowlist; add them explicitly or redeploy the backend with the preview origin before testing against a preview.
+- No custom domain on Firebase Hosting yet — the frontend ships at `.firebaseapp.com` / `.web.app`.
+- No automated retraining pipeline. Retrains are manual via `.venv/bin/python training/launch.py`. Cloud Scheduler + Workflows would be a straightforward follow-up.
+- No monitoring dashboards beyond Cloud Logging. A Looker Studio view over `predictions` + `feedback` is a natural next step.
+- CSV upload path (bulk ticket ingestion) is scoped out. Batch inference runs against whatever sits in the `tickets` table.
+
 ## Reminders
 
 - Python venv lives at `.venv/` — use `.venv/bin/python`, not conda.
 - GCP project is `msds-603-victors-demons`, region `us-central1`.
-- The model endpoint is **IAM-restricted**. Hitting it from a browser returns 403; only the backend SA (via ID token) can invoke it.
+- The model endpoint is **IAM-restricted**. Hitting it from a browser returns 403; only the backend SA (via Google-signed ID token) can invoke it.
 - Backend uses `/health` (not `/healthz`) because the Cloud Run GFE intercepts `/healthz`. The `/healthz` alias also exists on the backend for parity.
+- Firebase web config values (`apiKey`, `authDomain`, etc.) in `frontend/config.js` are public identifiers, not secrets. Security is enforced by backend token verification and Firebase's authorized-domains list.
