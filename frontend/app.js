@@ -28,6 +28,7 @@ const priorityValue = document.querySelector("#priority-value");
 const confidenceValue = document.querySelector("#confidence-value");
 const modelValue = document.querySelector("#model-value");
 const ticketIdValue = document.querySelector("#ticket-id-value");
+const latencyValue = document.querySelector("#latency-value");
 const feedbackRow = document.querySelector("#feedback-row");
 const feedbackUp = document.querySelector("#feedback-up");
 const feedbackDown = document.querySelector("#feedback-down");
@@ -374,6 +375,11 @@ function renderPrediction(ticket) {
       : "--";
   modelValue.textContent = ticket.model_version ? `v${ticket.model_version}` : "--";
   ticketIdValue.textContent = ticket.ticket_id ? ticket.ticket_id.slice(0, 8) : "--";
+  if (latencyValue) {
+    const total = typeof ticket.__totalMs === "number" ? `${ticket.__totalMs} ms total` : null;
+    const model = typeof ticket.latency_ms === "number" ? `${ticket.latency_ms} ms model` : null;
+    latencyValue.textContent = [total, model].filter(Boolean).join(" · ") || "--";
+  }
 
   currentPredictionId = ticket.prediction_id || null;
   resetFeedbackRow();
@@ -392,6 +398,7 @@ function renderError(message) {
   confidenceValue.textContent = "--";
   modelValue.textContent = useMockApi ? "mock" : "live-api";
   ticketIdValue.textContent = message;
+  if (latencyValue) latencyValue.textContent = "--";
   feedbackRow.hidden = true;
 }
 
@@ -663,7 +670,9 @@ form.addEventListener("submit", async (event) => {
   submitButton.textContent = "Classifying...";
 
   try {
+    const t0 = performance.now();
     const ticket = await apiCreateTicket(text);
+    ticket.__totalMs = Math.round(performance.now() - t0);
     renderPrediction(ticket);
     refreshTickets();
   } catch (error) {

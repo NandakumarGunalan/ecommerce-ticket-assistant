@@ -130,6 +130,13 @@ def main() -> None:
             fail(f"index.html missing required element id #{needle}")
     print("ok: index.html has auth-gate, app-main, sign-in, sign-out wiring")
 
+    # E2E latency display on the prediction card.
+    if "latency-value" not in idx_src:
+        fail("index.html missing #latency-value (prediction latency display)")
+    if "performance.now()" not in src or "__totalMs" not in src:
+        fail("app.js missing performance.now() timer around apiCreateTicket")
+    print("ok: latency display wired (performance.now -> __totalMs -> #latency-value)")
+
     print("\nAll contract checks passed.")
 
 
