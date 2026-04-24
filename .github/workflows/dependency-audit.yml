@@ -1,0 +1,31 @@
+name: Dependency audit
+
+on:
+  pull_request:
+    paths:
+      - '**/requirements.txt'
+      - '.github/workflows/dependency-audit.yml'
+  schedule:
+    # Mondays 14:00 UTC = early-morning Pacific
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [backend, inference, training]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+      - name: Audit ${{ matrix.service }}
+        run: |
+          # --strict makes any vuln (incl. unpinned) a failure; drop to warn-only
+          # if false positives become noisy.
+          pip-audit -r ${{ matrix.service }}/requirements.txt --disable-pip

@@ -1,0 +1,82 @@
+name: Model smoke test
+
+# Hits the deployed inference /predict endpoint with a fixed payload after
+# changes land on main, and asserts the response shape. Catches the class of
+# bug where unit tests pass but the deployed model endpoint is broken
+# (cold-start timeouts, missing model artifact, IAM regression, etc.).
+#
+# Required repo secrets:
+#   GCP_WIF_PROVIDER       — Workload Identity Federation provider resource name
+#   GCP_SMOKE_TEST_SA      — service account email with roles/run.invoker on the
+#                            inference Cloud Run service
+#   INFERENCE_URL          — full https URL of the deployed inference service
+#                            (e.g. https://distilbert-priority-inference-xxx.a.run.app)
+#
+# If any secret is unset the job exits early with a clear message rather than
+# failing — keeps the workflow useful even before secrets are wired up.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'inference/**'
+  workflow_dispatch:
+  schedule:
+    # Daily at 15:00 UTC — catches drift / silent regressions even with no deploys
+    - cron: '0 15 * * *'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # required for WIF
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets are configured
+        id: secrets
+        env:
+          WIF: ${{ secrets.GCP_WIF_PROVIDER }}
+          SA: ${{ secrets.GCP_SMOKE_TEST_SA }}
+          URL: ${{ secrets.INFERENCE_URL }}
+        run: |
+          if [[ -z "$WIF" || -z "$SA" || -z "$URL" ]]; then
+            echo "::warning::One or more required secrets are unset; skipping smoke test."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to GCP
+        if: steps.secrets.outputs.skip == 'false'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SMOKE_TEST_SA }}
+
+      - name: Hit /predict and assert response shape
+        if: steps.secrets.outputs.skip == 'false'
+        env:
+          INFERENCE_URL: ${{ secrets.INFERENCE_URL }}
+        run: |
+          set -euo pipefail
+          ID_TOKEN=$(gcloud auth print-identity-token --audiences="$INFERENCE_URL")
+
+          PAYLOAD='{"ticket_text":"Customer cannot complete checkout due to payment timeout."}'
+          BODY=$(curl -sS --fail-with-body \
+            -H "Authorization: Bearer $ID_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            --max-time 60 \
+            "$INFERENCE_URL/predict")
+
+          echo "Response: $BODY"
+          # Assert predicted_priority field is present and non-empty.
+          echo "$BODY" | python -c '
+          import json, sys
+          r = json.load(sys.stdin)
+          p = r.get("predicted_priority")
+          assert isinstance(p, str) and p, f"predicted_priority missing or empty: {r}"
+          print(f"ok: predicted_priority={p!r}")
+          '

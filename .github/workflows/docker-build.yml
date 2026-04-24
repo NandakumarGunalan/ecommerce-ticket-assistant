@@ -1,0 +1,46 @@
+name: Docker build
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'inference/**'
+      - 'training/**'
+      - 'frontend/**'
+      - '.github/workflows/docker-build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - name: backend
+            dockerfile: backend/Dockerfile
+          - name: inference
+            dockerfile: inference/Dockerfile
+          - name: frontend
+            dockerfile: frontend/Dockerfile
+          # training image is heavy (CUDA base) — build only if explicitly changed
+          - name: training
+            dockerfile: training/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check if service changed
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          files: ${{ matrix.service.name }}/**
+      - name: Set up Docker Buildx
+        if: steps.changed.outputs.any_changed == 'true'
+        uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.service.name }} image (no push)
+        if: steps.changed.outputs.any_changed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.service.dockerfile }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.service.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service.name }}
