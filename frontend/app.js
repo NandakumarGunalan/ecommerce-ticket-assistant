@@ -3,6 +3,16 @@ const apiBaseUrl = (config.API_BASE_URL || "http://127.0.0.1:8001").replace(/\/$
 const forceMock = new URLSearchParams(window.location.search).get("mock") === "true";
 let useMockApi = forceMock || Boolean(config.USE_MOCK_API);
 
+// ---------- DOM ----------
+const authGate = document.querySelector("#auth-gate");
+const appMain = document.querySelector("#app-main");
+const userBar = document.querySelector("#user-bar");
+const userEmailEl = document.querySelector("#user-email");
+const btnSignIn = document.querySelector("#btn-sign-in");
+const btnSignOut = document.querySelector("#btn-sign-out");
+const authError = document.querySelector("#auth-error");
+const toastContainer = document.querySelector("#toast-container");
+
 const form = document.querySelector("#ticket-form");
 const textarea = document.querySelector("#ticket-text");
 const clearButton = document.querySelector("#clear-button");
@@ -33,6 +43,8 @@ const priorityClasses = ["low", "medium", "high", "urgent", "unknown"];
 
 let currentPredictionId = null;
 let cachedTickets = [];
+let currentUser = null;
+let appBooted = false;
 
 // ---------- Mock state ----------
 const mockTickets = [
@@ -121,13 +133,125 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function showToast(message, tone = "info", ttl = 4000) {
+  if (!toastContainer) return;
+  const el = document.createElement("div");
+  el.className = `toast toast--${tone}`;
+  el.textContent = message;
+  toastContainer.appendChild(el);
+  setTimeout(() => {
+    el.classList.add("toast--fade");
+    setTimeout(() => el.remove(), 300);
+  }, ttl);
+}
+
+// ---------- authedFetch ----------
+// Wave 5 (Diagnosis C Fix A): on 401 we try a forced token refresh + one
+// retry before giving up. Only a second consecutive 401 after refresh gets
+// treated as a truly expired session. We do NOT force signOut on the first
+// 401 — that caused a silent loop where a transient clock skew or a
+// momentarily-unreachable backend bounced the user back to the gate with
+// no visible explanation.
+async function doFetchWithToken(url, options, forceRefresh) {
+  const headers = new Headers(options.headers || {});
+  if (options.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (!useMockApi) {
+    const fb = window.__firebase;
+    if (fb) {
+      try {
+        const token = await fb.getIdToken(forceRefresh);
+        if (token) {
+          headers.set("Authorization", `Bearer ${token}`);
+        }
+      } catch (err) {
+        console.warn("Failed to get ID token", err);
+      }
+    }
+  }
+  return fetch(url, { ...options, headers });
+}
+
+async function authedFetch(path, options = {}) {
+  const url = path.startsWith("http") ? path : `${apiBaseUrl}${path}`;
+
+  let response = await doFetchWithToken(url, options, false);
+
+  if (!useMockApi) {
+    if (response.status === 401) {
+      // Read body for diagnostics.
+      let bodyText = "";
+      try { bodyText = await response.clone().text(); } catch (_) { /* ignore */ }
+      console.warn("[authedFetch] 401 from", url, "body:", bodyText, "— refreshing token and retrying once");
+      // Force-refresh the ID token and retry exactly once.
+      try {
+        response = await doFetchWithToken(url, options, true);
+      } catch (err) {
+        console.warn("[authedFetch] retry fetch failed", err);
+      }
+      if (response.status === 401) {
+        // Still 401 after refresh — the session is genuinely bad. Surface a
+        // visible error and sign the user out as a last resort.
+        let retryBody = "";
+        try { retryBody = await response.clone().text(); } catch (_) { /* ignore */ }
+        console.error("[authedFetch] 401 persists after token refresh", url, retryBody);
+        showAuthBanner(
+          "Your session is not authorized. Please sign in again.",
+          retryBody,
+        );
+        showToast("Session expired. Please sign in again.", "danger");
+        try {
+          if (window.__firebase) await window.__firebase.signOut();
+        } catch (_) { /* ignore */ }
+        throw new Error("unauthorized");
+      }
+      console.log("[authedFetch] retry after token refresh succeeded", url);
+    }
+    if (response.status === 429) {
+      showToast("Slow down — limit is 50 req/min.", "warn");
+      throw new Error("rate_limited");
+    }
+  }
+
+  return response;
+}
+
+function showAuthBanner(message, detail) {
+  if (!authError) return;
+  authError.hidden = false;
+  authError.textContent = detail ? `${message} (${detail})` : message;
+}
+function clearAuthBanner() {
+  if (!authError) return;
+  authError.hidden = true;
+  authError.textContent = "";
+}
+
+// Expose a hook so the GIS callback path can surface credential-exchange
+// errors on the auth gate even if the user never reaches authedFetch.
+window.__authSignalError = (err) => {
+  const msg = (err && err.message) || String(err || "unknown_error");
+  showAuthBanner(`Sign-in failed: ${msg}`);
+};
+
 // ---------- API calls ----------
 async function apiHealth() {
   if (useMockApi) {
     return { status: "ok", model_version: "mock", model_run_id: "mock" };
   }
+  // /health is public — no auth required, but harmless to go through authedFetch.
   const response = await fetch(`${apiBaseUrl}/health`);
   if (!response.ok) throw new Error(`Health check failed with ${response.status}`);
+  return response.json();
+}
+
+async function apiMe() {
+  if (useMockApi) {
+    return { uid: "mock-user", email: "mock@example.com", display_name: "Mock User" };
+  }
+  const response = await authedFetch(`/me`);
+  if (!response.ok) throw new Error(`/me failed with ${response.status}`);
   return response.json();
 }
 
@@ -152,9 +276,8 @@ async function apiCreateTicket(ticketText) {
     return ticket;
   }
 
-  const response = await fetch(`${apiBaseUrl}/tickets`, {
+  const response = await authedFetch(`/tickets`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ticket_text: ticketText }),
   });
 
@@ -173,7 +296,7 @@ async function apiListTickets(limit = 50) {
   if (useMockApi) {
     return [...mockTickets].slice(0, limit);
   }
-  const response = await fetch(`${apiBaseUrl}/tickets?limit=${limit}`);
+  const response = await authedFetch(`/tickets?limit=${limit}`);
   if (!response.ok) throw new Error(`List tickets failed with ${response.status}`);
   return response.json();
 }
@@ -186,9 +309,8 @@ async function apiSendFeedback(predictionId, verdict) {
       created_at: new Date().toISOString(),
     };
   }
-  const response = await fetch(`${apiBaseUrl}/feedback`, {
+  const response = await authedFetch(`/feedback`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prediction_id: predictionId, verdict }),
   });
   if (!response.ok) throw new Error(`Feedback failed with ${response.status}`);
@@ -333,6 +455,138 @@ async function checkHealth() {
   }
 }
 
+// ---------- Auth flow ----------
+function showAuthGate() {
+  authGate.hidden = false;
+  appMain.hidden = true;
+  if (userBar) userBar.hidden = true;
+}
+
+function showAppUI(user) {
+  authGate.hidden = true;
+  appMain.hidden = false;
+  if (userBar) {
+    userBar.hidden = false;
+    userEmailEl.textContent = user?.email || user?.displayName || "signed in";
+  }
+}
+
+async function onSignedIn(user) {
+  currentUser = user;
+  showAppUI(user);
+  clearAuthBanner();
+  if (!appBooted) {
+    appBooted = true;
+    updateCharacterCount();
+  }
+  // Confirm token/session with backend /me, then run initial loads. Note:
+  // authedFetch now force-refreshes the token and retries once on the first
+  // 401 before giving up. If /me still fails after that, authedFetch has
+  // already shown a visible banner + signed the user out, so we just bail.
+  try {
+    if (!useMockApi) {
+      const me = await apiMe();
+      if (me && (me.display_name || me.email) && userEmailEl) {
+        userEmailEl.textContent = me.email || me.display_name;
+      }
+    }
+  } catch (err) {
+    console.warn("/me check failed", err);
+    return;
+  }
+
+  await checkHealth();
+  await refreshTickets();
+}
+
+function onSignedOut() {
+  currentUser = null;
+  showAuthGate();
+}
+
+function initAuth() {
+  if (useMockApi) {
+    // Synthesize a fake user and jump straight into the app.
+    const fake = { uid: "mock-user", email: "mock@example.com", displayName: "Mock User" };
+    onSignedIn(fake);
+    return;
+  }
+
+  const bind = () => {
+    const fb = window.__firebase;
+    if (!fb) {
+      // Firebase failed to load. Show the gate with an error.
+      showAuthGate();
+      if (authError) {
+        authError.hidden = false;
+        authError.textContent = "Authentication service failed to load. Check console.";
+      }
+      return;
+    }
+    fb.onAuthStateChanged((user) => {
+      console.log("[auth] onAuthStateChanged fired, user:", user && user.email);
+      if (user) onSignedIn(user);
+      else onSignedOut();
+    });
+  };
+
+  if (window.__firebase) {
+    bind();
+  } else {
+    window.addEventListener("firebase-ready", bind, { once: true });
+    window.addEventListener("firebase-error", () => {
+      showAuthGate();
+      if (authError) {
+        authError.hidden = false;
+        authError.textContent = "Authentication service failed to load. Check console.";
+      }
+    }, { once: true });
+  }
+}
+
+// ---------- Event wiring ----------
+if (btnSignIn) {
+  btnSignIn.addEventListener("click", async () => {
+    if (useMockApi) return;
+    const fb = window.__firebase;
+    if (!fb) {
+      showToast("Auth not ready. Try again in a moment.", "danger");
+      return;
+    }
+    clearAuthBanner();
+    btnSignIn.disabled = true;
+    try {
+      await fb.signIn();
+      // Note: with GIS, signIn() returns immediately after opening the
+      // Google-owned popup. The Firebase sign-in actually completes inside
+      // the GIS callback (see index.html), which drives onAuthStateChanged.
+    } catch (err) {
+      console.warn("Sign-in failed", err);
+      showAuthBanner(`Sign-in failed: ${err?.message || err}`);
+    } finally {
+      btnSignIn.disabled = false;
+    }
+  });
+}
+
+if (btnSignOut) {
+  btnSignOut.addEventListener("click", async () => {
+    if (useMockApi) {
+      // In mock mode just reload to re-enter the fake user state.
+      onSignedOut();
+      setTimeout(() => onSignedIn({ uid: "mock-user", email: "mock@example.com", displayName: "Mock User" }), 50);
+      return;
+    }
+    const fb = window.__firebase;
+    if (!fb) return;
+    try {
+      await fb.signOut();
+    } catch (err) {
+      console.warn("Sign-out failed", err);
+    }
+  });
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = textarea.value.trim();
@@ -404,6 +658,6 @@ refreshTicketsButton.addEventListener("click", () => {
   refreshTickets();
 });
 
-updateCharacterCount();
-checkHealth();
-refreshTickets();
+// ---------- Boot ----------
+setModeLabel();
+initAuth();

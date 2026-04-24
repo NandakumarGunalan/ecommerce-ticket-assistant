@@ -4,6 +4,11 @@ from __future__ import annotations
 import json
 import uuid
 
+from fastapi.testclient import TestClient
+
+from backend.api.auth import User, current_user_dep
+from backend.api.main import app, get_db, get_model_client
+
 
 def _make_ticket(client) -> dict:
     r = client.post("/tickets", json={"ticket_text": "help"})
@@ -76,3 +81,31 @@ def test_feedback_unknown_prediction_404(client):
         json={"prediction_id": str(uuid.uuid4()), "verdict": "thumbs_up"},
     )
     assert r.status_code == 404
+
+
+def test_feedback_cross_user_is_404(db, model_stub):
+    """User B cannot leave feedback on User A's prediction."""
+    user_a = User(uid="user-a", email="a@example.com", display_name="A")
+    user_b = User(uid="user-b", email="b@example.com", display_name="B")
+
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_model_client] = lambda: model_stub
+    try:
+        client = TestClient(app)
+
+        # User A creates a ticket → prediction.
+        app.dependency_overrides[current_user_dep] = lambda: user_a
+        r = client.post("/tickets", json={"ticket_text": "A's issue"})
+        assert r.status_code == 200
+        prediction_id = r.json()["prediction_id"]
+
+        # User B tries to leave feedback on it — 404 (collapsed from
+        # "exists but not yours").
+        app.dependency_overrides[current_user_dep] = lambda: user_b
+        r = client.post(
+            "/feedback",
+            json={"prediction_id": prediction_id, "verdict": "thumbs_up"},
+        )
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides.clear()

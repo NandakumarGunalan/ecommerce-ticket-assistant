@@ -21,12 +21,12 @@ def test_predict_happy_path(client, model_stub):
     assert model_stub.predict_calls == ["my order never arrived"]
 
 
-def test_predict_does_not_write_to_db(client, db):
+def test_predict_does_not_write_to_db(client, db, stub_user):
     r = client.post("/predict", json={"ticket_text": "hello"})
     assert r.status_code == 200
     # No ticket created by /predict.
     assert client.get("/tickets").json() == []
-    assert db.list_tickets() == []
+    assert db.list_tickets(user_id=stub_user.uid) == []
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api import config, logging_utils
+from backend.api.auth import User, current_user_dep, init_firebase_app
 from backend.api.db_client import (
     DBClient,
     TicketPredictionRecord,
@@ -30,10 +31,12 @@ from backend.api.db_client import (
 )
 from backend.api.logging_utils import get_logger
 from backend.api.model_client import ModelClient, ModelEndpointError
+from backend.api.rate_limit import make_rate_limit_dep
 from backend.api.schemas import (
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
+    MeResponse,
     PredictResponse,
     TicketRecord,
     TicketTextRequest,
@@ -53,22 +56,27 @@ app = FastAPI(
 
 
 def _install_cors(application: FastAPI) -> None:
-    """Allow the frontend dev server + wildcard for the current demo.
+    """Lock CORS down to the deployed frontend + local dev origins.
 
-    Wildcard is acceptable for now because the service is public and has
-    no auth state — there's nothing a cross-origin caller can steal. Once
-    the frontend is deployed behind a known origin, replace ``*`` with
-    that origin and drop the wildcard.
+    With bearer-token auth in play, wildcards are no longer acceptable:
+    the browser must send ``Authorization`` from a known origin.
     """
     application.add_middleware(
         CORSMiddleware,
         allow_origins=[
+            "https://ticket-frontend-48533944424.us-central1.run.app",
+            # Firebase Hosting origins — same-origin as the Firebase auth
+            # handler (/__/auth/handler), which avoids the cross-site
+            # storage partitioning that broke signInWithRedirect on
+            # the Cloud Run origin.
+            "https://msds-603-victors-demons.web.app",
+            "https://msds-603-victors-demons.firebaseapp.com",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
-            "*",  # TODO: tighten when frontend is deployed
         ],
+        allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "Authorization"],
     )
 
 
@@ -91,6 +99,38 @@ def get_db() -> DBClient:
     if db is None:
         raise HTTPException(status_code=503, detail="db not initialized")
     return db
+
+
+def rate_limited_user(
+    user: User = Depends(current_user_dep),
+    db: DBClient = Depends(get_db),
+) -> User:
+    """Authenticate + rate-limit the caller in a single attachment point.
+
+    Mirrors the behavior of
+    :func:`backend.api.rate_limit.make_rate_limit_dep` but resolves the
+    store via ``Depends(get_db)`` so ``app.dependency_overrides[get_db]``
+    in tests transparently swaps the rate-limit backend too. Building
+    ``make_rate_limit_dep`` at startup would bind the store to the
+    production DB client and defeat those overrides.
+    """
+    from backend.api.rate_limit import (
+        DEFAULT_LIMIT_PER_MINUTE,
+        _current_window,
+    )
+
+    window = _current_window()
+    new_count = db.increment_and_get(user.uid, window)
+    if new_count > DEFAULT_LIMIT_PER_MINUTE:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "rate_limit_exceeded",
+                "limit_per_minute": DEFAULT_LIMIT_PER_MINUTE,
+            },
+            headers={"Retry-After": "60"},
+        )
+    return user
 
 
 def get_model_client() -> ModelClient:
@@ -116,6 +156,11 @@ def _startup() -> None:
         _state["model"] = ModelClient(endpoint_url=endpoint_url)
     if _state["db"] is None:
         _state["db"] = build_postgres_client_from_env()
+    # Firebase app must be initialized before the first request so the
+    # default verifier in ``current_user_dep`` can call
+    # ``firebase_admin.auth.verify_id_token``. Safe to call multiple
+    # times; no-op after the first.
+    init_firebase_app()
 
 
 @app.on_event("shutdown")
@@ -223,6 +268,7 @@ def healthz(
 def predict(
     req: TicketTextRequest,
     model: ModelClient = Depends(get_model_client),
+    user: User = Depends(rate_limited_user),
 ) -> PredictResponse:
     """Stateless passthrough — no DB write.
 
@@ -245,10 +291,12 @@ def create_ticket(
     req: TicketTextRequest,
     model: ModelClient = Depends(get_model_client),
     db: DBClient = Depends(get_db),
+    user: User = Depends(rate_limited_user),
 ) -> TicketRecord:
     """Score + persist + return the combined record."""
     body = _call_model_or_502(model, req.ticket_text)
     record = db.insert_ticket_and_prediction(
+        user_id=user.uid,
         ticket_text=req.ticket_text,
         predicted_priority=body["predicted_priority"],
         confidence=float(body["confidence"]),
@@ -278,8 +326,9 @@ def create_ticket(
 def list_tickets(
     limit: int = Query(default=50, ge=1, le=500),
     db: DBClient = Depends(get_db),
+    user: User = Depends(rate_limited_user),
 ) -> List[TicketRecord]:
-    records = db.list_tickets(limit=limit)
+    records = db.list_tickets(user_id=user.uid, limit=limit)
     return [_record_to_schema(r) for r in records]
 
 
@@ -287,10 +336,12 @@ def list_tickets(
 def create_feedback(
     req: FeedbackRequest,
     db: DBClient = Depends(get_db),
+    user: User = Depends(rate_limited_user),
 ) -> FeedbackResponse:
     try:
         feedback_id, created_at = db.insert_feedback(
             prediction_id=req.prediction_id,
+            user_id=user.uid,
             verdict=req.verdict,
             note=req.note,
         )
@@ -322,3 +373,18 @@ def create_feedback(
     )
 
     return FeedbackResponse(feedback_id=feedback_id, created_at=created_at)
+
+
+@app.get("/me", response_model=MeResponse)
+def me(user: User = Depends(rate_limited_user)) -> MeResponse:
+    """Return the authenticated caller's profile.
+
+    Useful for the frontend to round-trip the decoded token claims — the
+    client can confirm it's talking to the right backend and surface the
+    uid/email/display_name without re-decoding the JWT.
+    """
+    return MeResponse(
+        uid=user.uid,
+        email=user.email,
+        display_name=user.display_name,
+    )

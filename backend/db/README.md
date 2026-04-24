@@ -41,7 +41,10 @@ Raw ticket text received from the frontend.
 - `id UUID PRIMARY KEY`
 - `text TEXT NOT NULL` — ticket body
 - `source TEXT NOT NULL DEFAULT 'paste'` — `paste` | `csv` | `api`
+- `user_id TEXT NOT NULL` — Firebase UID of the submitter; scopes every ticket
+  to the authenticated user who created it
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
+- Index: `user_id`
 
 ### `predictions`
 One row per (ticket, model-run). A ticket may be scored multiple times.
@@ -64,6 +67,16 @@ Thumbs up / thumbs down per prediction from the human reviewer.
 - `note TEXT`
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
 - Index: `prediction_id`
+
+### `rate_limit_counters`
+Per-user per-minute request counters used by the backend to enforce API rate
+limits. One row per (user, 1-minute bucket); `count` is incremented on each
+request and old rows can be swept by a background job.
+- `user_id TEXT NOT NULL` — Firebase UID
+- `window_start_minute TIMESTAMPTZ NOT NULL` — start of the 1-minute window
+- `count INTEGER NOT NULL DEFAULT 0` — requests observed in that window
+- `PRIMARY KEY (user_id, window_start_minute)`
+- Index: `window_start_minute` (for sweeping expired rows)
 
 ## Fetching passwords from Secret Manager
 
@@ -116,6 +129,33 @@ The script:
 - Runs `schema.sql` as `postgres`
 - Prints `\dt` and row counts for verification
 - Kills the proxy on exit (trap)
+
+## Migrations
+
+Incremental changes to an already-populated database live in
+`backend/db/migrations/` and are applied with `apply_migration.sh`. Unlike
+`schema.sql` (which is idempotent and describes the desired end state),
+migration files are one-shot and may perform destructive operations.
+
+| Migration                        | Purpose                                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `001_add_user_accounts.sql`      | Wipes demo data; adds `tickets.user_id` + index; creates `rate_limit_counters` with grants        |
+
+Apply a migration:
+
+```bash
+# Default (applies 001_add_user_accounts.sql):
+bash backend/db/apply_migration.sh
+
+# Or pass an explicit file:
+bash backend/db/apply_migration.sh backend/db/migrations/001_add_user_accounts.sql
+```
+
+The script uses the same Cloud SQL Auth Proxy pattern as `apply_schema.sh`
+(downloads the proxy if missing, fetches the root password from Secret Manager,
+runs psql as `postgres`, kills the proxy on exit). After applying a migration,
+update `schema.sql` so a fresh DB built with `apply_schema.sh` ends up in the
+same state.
 
 ## Provisioning commands (for reference)
 

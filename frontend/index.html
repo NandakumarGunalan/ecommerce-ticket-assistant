@@ -6,131 +6,293 @@
     <title>Ecommerce Ticket Console</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
+    <!-- Google Identity Services (GIS). Used to obtain a Google OAuth
+         credential directly from Google, which we then exchange for a
+         Firebase credential via signInWithCredential. This bypasses
+         Firebase's /__/auth/handler iframe + redirect dance entirely,
+         which fails under Chrome's storage partitioning. See
+         https://firebase.google.com/docs/auth/web/redirect-best-practices
+         (Option 5). -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
-    <main class="page">
-      <header class="masthead">
-        <div>
-          <p class="eyebrow">Ecommerce Support</p>
-          <h1>Ticket Priority</h1>
-          <p class="subhead">Classify new messages and review previously ingested tickets by urgency.</p>
-        </div>
-
-        <div class="service-state" aria-live="polite">
-          <span class="mode-pill" id="mode-pill">Live API</span>
-          <span class="status-line">
-            <span class="status-dot" id="status-dot"></span>
-            <span id="health-status">Checking endpoint</span>
-          </span>
-        </div>
-      </header>
-
-      <nav class="segmented-control" aria-label="Ticket console views">
-        <button class="segment segment--active" type="button" data-view-target="classify">
-          Classify
+    <!-- Sign-in gate, shown by default during auth init; hidden once signed in. -->
+    <div id="auth-gate" class="auth-gate">
+      <div class="auth-card">
+        <p class="eyebrow">Ecommerce Support</p>
+        <h1 class="auth-title">Ticket Triage</h1>
+        <p class="auth-sub">Sign in with your Google account to continue.</p>
+        <button id="btn-sign-in" class="primary-button" type="button">
+          Sign in with Google
         </button>
-        <button class="segment" type="button" data-view-target="tickets">
-          Tickets <span id="ticket-count">0</span>
-        </button>
-      </nav>
+        <p class="auth-error" id="auth-error" hidden></p>
+      </div>
+    </div>
 
-      <section class="view view--active" id="classify-view" data-view="classify">
-        <section class="workspace">
-          <form class="composer" id="ticket-form">
-            <div class="composer-header">
-              <label for="ticket-text">Customer message</label>
-              <button class="text-button" type="button" id="clear-button">Clear</button>
-            </div>
-
-            <textarea
-              id="ticket-text"
-              name="ticket-text"
-              minlength="5"
-              required
-              spellcheck="true"
-              placeholder="Paste the customer ticket here..."
-            ></textarea>
-
-            <div class="sample-row" aria-label="Example tickets">
-              <button type="button" data-example="My refund still has not arrived after two weeks, and support keeps telling me to wait. I need this resolved today because the duplicate charge caused my card payment to fail.">
-                Refund delay
-              </button>
-              <button type="button" data-example="The app will not let me log in after the latest update. I tried resetting my password and requesting an OTP, but the code never arrives.">
-                Login issue
-              </button>
-              <button type="button" data-example="I want to know whether this backpack qualifies for free delivery and how long standard shipping usually takes.">
-                Shipping question
-              </button>
-            </div>
-
-            <div class="composer-actions">
-              <p id="character-count">0 characters</p>
-              <button class="primary-button" type="submit" id="submit-button">
-                Classify ticket
-              </button>
-            </div>
-          </form>
-
-          <aside class="result-area" aria-labelledby="result-title">
-            <p class="eyebrow">Prediction</p>
-            <h2 id="result-title">Priority signal</h2>
-
-            <div class="empty-state" id="empty-state">
-              <p>Waiting for a ticket.</p>
-              <span>The model result will appear here after classification.</span>
-            </div>
-
-            <div class="result-card hidden" id="result-card">
-              <span class="priority-band" id="priority-band">unknown</span>
-              <p class="priority-value" id="priority-value">Unknown</p>
-
-              <dl class="metric-list">
-                <div>
-                  <dt>Confidence</dt>
-                  <dd id="confidence-value">--</dd>
-                </div>
-                <div>
-                  <dt>Model</dt>
-                  <dd id="model-value">--</dd>
-                </div>
-                <div>
-                  <dt>Ticket ID</dt>
-                  <dd id="ticket-id-value">--</dd>
-                </div>
-              </dl>
-
-              <div class="feedback-row" id="feedback-row" hidden>
-                <span class="feedback-label">Was this prediction right?</span>
-                <div class="feedback-buttons">
-                  <button class="feedback-btn" type="button" data-verdict="thumbs_up" id="feedback-up">&#128077;</button>
-                  <button class="feedback-btn" type="button" data-verdict="thumbs_down" id="feedback-down">&#128078;</button>
-                </div>
-                <span class="feedback-thanks hidden" id="feedback-thanks">Thanks for the feedback.</span>
-              </div>
-            </div>
-          </aside>
-        </section>
-      </section>
-
-      <section class="view" id="tickets-view" data-view="tickets">
-        <div class="tickets-header">
+    <!-- Main app, shown when signed in -->
+    <div id="app-main" hidden>
+      <main class="page">
+        <header class="masthead">
           <div>
-            <p class="eyebrow">Ingested Tickets</p>
-            <h2>Sorted by priority</h2>
+            <p class="eyebrow">Ecommerce Support</p>
+            <h1>Ticket Priority</h1>
+            <p class="subhead">Classify new messages and review previously ingested tickets by urgency.</p>
           </div>
-          <button class="text-button" type="button" id="refresh-tickets-button">Refresh</button>
-        </div>
 
-        <div class="ticket-list" id="ticket-list"></div>
+          <div class="service-state" aria-live="polite">
+            <span class="mode-pill" id="mode-pill">Live API</span>
+            <span class="status-line">
+              <span class="status-dot" id="status-dot"></span>
+              <span id="health-status">Checking endpoint</span>
+            </span>
+            <span class="user-bar" id="user-bar" hidden>
+              <span class="user-email" id="user-email"></span>
+              <button class="text-button" id="btn-sign-out" type="button">Sign out</button>
+            </span>
+          </div>
+        </header>
 
-        <div class="empty-state tickets-empty" id="tickets-empty">
-          <p>No tickets ingested yet.</p>
-          <span>Classified tickets are persisted by the backend and appear here sorted by urgency.</span>
-        </div>
-      </section>
-    </main>
+        <nav class="segmented-control" aria-label="Ticket console views">
+          <button class="segment segment--active" type="button" data-view-target="classify">
+            Classify
+          </button>
+          <button class="segment" type="button" data-view-target="tickets">
+            Tickets <span id="ticket-count">0</span>
+          </button>
+        </nav>
+
+        <section class="view view--active" id="classify-view" data-view="classify">
+          <section class="workspace">
+            <form class="composer" id="ticket-form">
+              <div class="composer-header">
+                <label for="ticket-text">Customer message</label>
+                <button class="text-button" type="button" id="clear-button">Clear</button>
+              </div>
+
+              <textarea
+                id="ticket-text"
+                name="ticket-text"
+                minlength="5"
+                required
+                spellcheck="true"
+                placeholder="Paste the customer ticket here..."
+              ></textarea>
+
+              <div class="sample-row" aria-label="Example tickets">
+                <button type="button" data-example="My refund still has not arrived after two weeks, and support keeps telling me to wait. I need this resolved today because the duplicate charge caused my card payment to fail.">
+                  Refund delay
+                </button>
+                <button type="button" data-example="The app will not let me log in after the latest update. I tried resetting my password and requesting an OTP, but the code never arrives.">
+                  Login issue
+                </button>
+                <button type="button" data-example="I want to know whether this backpack qualifies for free delivery and how long standard shipping usually takes.">
+                  Shipping question
+                </button>
+              </div>
+
+              <div class="composer-actions">
+                <p id="character-count">0 characters</p>
+                <button class="primary-button" type="submit" id="submit-button">
+                  Classify ticket
+                </button>
+              </div>
+            </form>
+
+            <aside class="result-area" aria-labelledby="result-title">
+              <p class="eyebrow">Prediction</p>
+              <h2 id="result-title">Priority signal</h2>
+
+              <div class="empty-state" id="empty-state">
+                <p>Waiting for a ticket.</p>
+                <span>The model result will appear here after classification.</span>
+              </div>
+
+              <div class="result-card hidden" id="result-card">
+                <span class="priority-band" id="priority-band">unknown</span>
+                <p class="priority-value" id="priority-value">Unknown</p>
+
+                <dl class="metric-list">
+                  <div>
+                    <dt>Confidence</dt>
+                    <dd id="confidence-value">--</dd>
+                  </div>
+                  <div>
+                    <dt>Model</dt>
+                    <dd id="model-value">--</dd>
+                  </div>
+                  <div>
+                    <dt>Ticket ID</dt>
+                    <dd id="ticket-id-value">--</dd>
+                  </div>
+                </dl>
+
+                <div class="feedback-row" id="feedback-row" hidden>
+                  <span class="feedback-label">Was this prediction right?</span>
+                  <div class="feedback-buttons">
+                    <button class="feedback-btn" type="button" data-verdict="thumbs_up" id="feedback-up">&#128077;</button>
+                    <button class="feedback-btn" type="button" data-verdict="thumbs_down" id="feedback-down">&#128078;</button>
+                  </div>
+                  <span class="feedback-thanks hidden" id="feedback-thanks">Thanks for the feedback.</span>
+                </div>
+              </div>
+            </aside>
+          </section>
+        </section>
+
+        <section class="view" id="tickets-view" data-view="tickets">
+          <div class="tickets-header">
+            <div>
+              <p class="eyebrow">Ingested Tickets</p>
+              <h2>Sorted by priority</h2>
+            </div>
+            <button class="text-button" type="button" id="refresh-tickets-button">Refresh</button>
+          </div>
+
+          <div class="ticket-list" id="ticket-list"></div>
+
+          <div class="empty-state tickets-empty" id="tickets-empty">
+            <p>No tickets ingested yet.</p>
+            <span>Classified tickets are persisted by the backend and appear here sorted by urgency.</span>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Toast container for transient messages (401 expired, 429 rate limit, etc) -->
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
     <script src="./config.js"></script>
+    <!-- Firebase SDK via CDN ESM. We use Firebase only for session management
+         (onAuthStateChanged, getIdToken, signOut) and for turning a Google
+         OAuth credential into a Firebase user via signInWithCredential.
+         The actual Google sign-in is performed by Google Identity Services
+         (loaded from accounts.google.com/gsi/client in <head>). This is
+         Firebase's "Option 5" pattern and avoids the broken iframe/redirect
+         flow that fails under Chrome's storage partitioning. -->
+    <script type="module">
+      const cfg = window.TICKET_CONSOLE_CONFIG || {};
+      const forceMock = new URLSearchParams(window.location.search).get("mock") === "true";
+      const useMock = forceMock || Boolean(cfg.USE_MOCK_API);
+
+      // Google OAuth client id — this is the web client id that Firebase uses
+      // for its Google provider. GIS must use the same client id so that the
+      // credential it returns is accepted by GoogleAuthProvider.credential().
+      const GOOGLE_CLIENT_ID =
+        "48533944424-ovpv2i1f9aecvr30jj1ipgg9eo2ho8l1.apps.googleusercontent.com";
+
+      if (!useMock && cfg.FIREBASE_CONFIG) {
+        try {
+          const { initializeApp } = await import(
+            "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js"
+          );
+          const {
+            getAuth,
+            onAuthStateChanged,
+            signInWithCredential,
+            signOut,
+            GoogleAuthProvider,
+          } = await import(
+            "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js"
+          );
+
+          const fbApp = initializeApp(cfg.FIREBASE_CONFIG);
+          const auth = getAuth(fbApp);
+
+          console.log("[auth] firebase initialized (GIS mode)");
+
+          // Wait until the GIS library's oauth2 token-client API is ready.
+          function waitForGis() {
+            return new Promise((resolve, reject) => {
+              const deadline = Date.now() + 10_000;
+              const tick = () => {
+                if (
+                  window.google &&
+                  window.google.accounts &&
+                  window.google.accounts.oauth2 &&
+                  typeof window.google.accounts.oauth2.initTokenClient === "function"
+                ) {
+                  return resolve();
+                }
+                if (Date.now() > deadline) {
+                  return reject(new Error("GIS library failed to load within 10s"));
+                }
+                setTimeout(tick, 50);
+              };
+              tick();
+            });
+          }
+
+          // Lazily initialize a single token client. We use the OAuth2 token
+          // client (popup owned by Google, not Firebase) and request an
+          // access_token with openid/email/profile scope. Firebase accepts an
+          // access token as the second argument to GoogleAuthProvider.credential
+          // and will exchange it for a Firebase session. We deliberately skip
+          // One Tap: it's unreliable across browser profiles / FedCM states,
+          // and a button-triggered popup is both deterministic and matches
+          // the existing "Sign in with Google" UX.
+          let tokenClient = null;
+          function getTokenClient() {
+            if (tokenClient) return tokenClient;
+            tokenClient = window.google.accounts.oauth2.initTokenClient({
+              client_id: GOOGLE_CLIENT_ID,
+              scope: "openid email profile",
+              callback: async (resp) => {
+                if (resp && resp.error) {
+                  console.error("[auth] GIS token client error:", resp.error, resp);
+                  window.__authSignalError?.(new Error(resp.error));
+                  return;
+                }
+                const accessToken = resp && resp.access_token;
+                if (!accessToken) {
+                  console.error("[auth] GIS callback returned no access_token", resp);
+                  window.__authSignalError?.(new Error("no_access_token"));
+                  return;
+                }
+                try {
+                  const cred = GoogleAuthProvider.credential(null, accessToken);
+                  await signInWithCredential(auth, cred);
+                  console.log("[auth] signInWithCredential succeeded");
+                  // onAuthStateChanged will fire with the Firebase user.
+                } catch (err) {
+                  console.error("[auth] signInWithCredential failed", err);
+                  window.__authSignalError?.(err);
+                }
+              },
+            });
+            return tokenClient;
+          }
+
+          window.__firebase = {
+            auth,
+            onAuthStateChanged: (cb) => onAuthStateChanged(auth, cb),
+            signIn: async () => {
+              await waitForGis();
+              const client = getTokenClient();
+              // Trigger the Google-owned popup. Nothing to await here; the
+              // configured callback will run signInWithCredential when Google
+              // returns a token, and onAuthStateChanged will then fire.
+              client.requestAccessToken({ prompt: "" });
+              return null;
+            },
+            signOut: () => signOut(auth),
+            getIdToken: async (forceRefresh = false) => {
+              const u = auth.currentUser;
+              if (!u) return null;
+              return await u.getIdToken(forceRefresh);
+            },
+          };
+          console.log("[auth] dispatching firebase-ready, currentUser:", auth.currentUser && auth.currentUser.email);
+          window.dispatchEvent(new CustomEvent("firebase-ready"));
+        } catch (err) {
+          console.error("Firebase init failed", err);
+          window.__firebaseError = err;
+          window.dispatchEvent(new CustomEvent("firebase-error", { detail: err }));
+        }
+      } else {
+        // Mock mode: no firebase needed.
+        window.dispatchEvent(new CustomEvent("firebase-skipped"));
+      }
+    </script>
     <script src="./app.js"></script>
   </body>
 </html>

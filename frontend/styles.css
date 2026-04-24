@@ -523,6 +523,126 @@ dd {
   font-weight: 650;
 }
 
+/* ---------- Auth gate ---------- */
+/* [hidden] must beat display:flex; HTML's hidden attribute sets display:none
+   via the UA stylesheet, which any explicit display rule overrides. */
+[hidden] {
+  display: none !important;
+}
+
+.auth-gate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-card {
+  width: min(440px, 100%);
+  padding: 40px 36px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(24px);
+  text-align: left;
+}
+
+.auth-title {
+  margin-bottom: 12px;
+  font-size: clamp(2.2rem, 5vw, 3rem);
+  letter-spacing: -0.05em;
+  line-height: 1;
+}
+
+.auth-sub {
+  margin-bottom: 28px;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.auth-card .primary-button {
+  width: 100%;
+}
+
+.auth-error {
+  margin-top: 18px;
+  color: var(--danger);
+  font-size: 0.88rem;
+}
+
+/* ---------- User bar (in masthead) ---------- */
+.user-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px 4px 14px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.84rem;
+  backdrop-filter: blur(24px);
+}
+
+.user-email {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 560;
+}
+
+.user-bar .text-button {
+  padding: 4px 8px;
+  font-size: 0.82rem;
+}
+
+/* ---------- Toasts ---------- */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  padding: 12px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  color: var(--text);
+  background: rgba(10, 14, 20, 0.92);
+  box-shadow: var(--shadow);
+  font-size: 0.9rem;
+  max-width: 340px;
+  backdrop-filter: blur(18px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.toast--danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.toast--warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.toast--fade {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
 @media (max-width: 860px) {
   .page {
     width: min(100% - 24px, 720px);

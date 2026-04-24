@@ -104,3 +104,16 @@ class HealthResponse(BaseModel):
     status: str
     model_version: Optional[str] = None
     model_run_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Auth / user-profile
+# ---------------------------------------------------------------------------
+
+
+class MeResponse(BaseModel):
+    """Response shape for ``GET /me`` — the authenticated user's profile."""
+
+    uid: str
+    email: str
+    display_name: Optional[str] = None
