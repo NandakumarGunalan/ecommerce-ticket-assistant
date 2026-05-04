@@ -178,7 +178,12 @@
 
           <div class="ticket-list" id="ticket-list"></div>
 
-          <div class="empty-state tickets-empty" id="tickets-empty">
+          <div class="empty-state tickets-loading" id="tickets-loading">
+            <p>Loading tickets…</p>
+            <span>Fetching the latest from the backend.</span>
+          </div>
+
+          <div class="empty-state tickets-empty hidden" id="tickets-empty">
             <p>No tickets ingested yet.</p>
             <span>Classified tickets are persisted by the backend and appear here sorted by urgency.</span>
           </div>
