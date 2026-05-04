@@ -17,10 +17,9 @@ around :func:`_install_cors`.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
 import csv
 import io
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
