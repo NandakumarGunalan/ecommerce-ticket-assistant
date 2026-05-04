@@ -44,7 +44,11 @@ Raw ticket text received from the frontend.
 - `user_id TEXT NOT NULL` — Firebase UID of the submitter; scopes every ticket
   to the authenticated user who created it
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
-- Index: `user_id`
+- `resolved_at TIMESTAMPTZ NULL` — `NULL` = open; set when the ticket is resolved
+- Indexes: `user_id`, `(user_id, resolved_at)`
+
+The canonical source for all table definitions is
+[`backend/db/schema.sql`](./schema.sql).
 
 ### `predictions`
 One row per (ticket, model-run). A ticket may be scored multiple times.
@@ -77,6 +81,41 @@ request and old rows can be swept by a background job.
 - `count INTEGER NOT NULL DEFAULT 0` — requests observed in that window
 - `PRIMARY KEY (user_id, window_start_minute)`
 - Index: `window_start_minute` (for sweeping expired rows)
+
+## Database users
+
+The instance has two database users serving different services:
+
+### `app_user` — backend API (password auth)
+Used by `ticket-backend-api` (Cloud Run service). Connects via the Cloud
+SQL Python Connector with a password fetched from Secret Manager
+(`ticket-assistant-db-app-password`). Owns `INSERT, SELECT, UPDATE,
+DELETE` on all application tables. Created and password-rotated by
+`apply_schema.sh`.
+
+### `inference-runner@msds-603-victors-demons.iam` — batch job (IAM auth)
+Used by `distilbert-priority-batch` (Cloud Run Job). Connects via the
+Cloud SQL Python Connector with `enable_iam_auth=True` — no password.
+The Postgres role is the truncated form of the GCP service account
+email (Cloud SQL convention: drop `.gserviceaccount.com`).
+
+Provisioning (one-time, idempotent):
+```bash
+# 1. Create the IAM database user
+gcloud sql users create inference-runner@msds-603-victors-demons.iam \
+  --instance=ticket-assistant-db \
+  --type=cloud_iam_service_account \
+  --project=msds-603-victors-demons
+
+# 2. Grant table privileges (run via cloud-sql-proxy as postgres role)
+GRANT SELECT ON tickets TO "inference-runner@msds-603-victors-demons.iam";
+GRANT SELECT, INSERT ON predictions TO "inference-runner@msds-603-victors-demons.iam";
+GRANT USAGE ON SCHEMA public TO "inference-runner@msds-603-victors-demons.iam";
+```
+
+The GCP service account `inference-runner@msds-603-victors-demons.iam.gserviceaccount.com`
+must additionally have IAM roles `roles/cloudsql.client` and
+`roles/cloudsql.instanceUser` at the project level.
 
 ## Fetching passwords from Secret Manager
 
@@ -184,11 +223,21 @@ gcloud projects add-iam-policy-binding msds-603-victors-demons \
   --role=roles/cloudsql.client
 
 # Instance
+#
+# NOTE: --database-flags=cloudsql.iam_authentication=on is required for IAM
+# service-account database auth (used by the inference batch job). Without
+# it, IAM auth silently fails with:
+#   SQLSTATE 28000 / Cloud SQL IAM service account authentication failed
+# If the instance was created without this flag, patch it:
+#   gcloud sql instances patch ticket-assistant-db \
+#     --project=msds-603-victors-demons \
+#     --database-flags=cloudsql.iam_authentication=on
 gcloud sql instances create ticket-assistant-db \
   --project=msds-603-victors-demons \
   --database-version=POSTGRES_15 --tier=db-f1-micro \
   --region=us-central1 --storage-size=10 --storage-type=SSD \
-  --availability-type=zonal --root-password="$ROOT_PW"
+  --availability-type=zonal --root-password="$ROOT_PW" \
+  --database-flags=cloudsql.iam_authentication=on
 
 gcloud sql databases create ticket_assistant \
   --instance=ticket-assistant-db --project=msds-603-victors-demons

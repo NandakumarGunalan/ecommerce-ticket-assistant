@@ -1,6 +1,7 @@
-# Ticket Triage Console
+# Turbo Triage
 
-Frontend for the ecommerce ticket assistant. Talks to the backend API
+Frontend for the ecommerce ticket priority classifier (formerly "Ticket
+Triage Console"). Talks to the backend API
 (`ticket-backend-api`) which in turn calls the ML model endpoint and persists
 tickets + feedback to Cloud SQL.
 
@@ -252,8 +253,41 @@ values display as `Unknown`.
 
 ## CORS
 
-The backend currently allows `*` for CORS, so the frontend can be served from
-any origin (including the deployed Cloud Run frontend URL and local dev).
+The backend uses a fixed CORS allowlist (see
+`backend/api/main.py::_install_cors`); the live entries currently include
+`https://msds-603-victors-demons.web.app`,
+`https://msds-603-victors-demons.firebaseapp.com`,
+`https://tickets.holderbein.dev`, and the localhost dev origins. When adding
+a new frontend host, update that list and redeploy the backend.
+
+## Custom domain
+
+The frontend is also served at `https://tickets.holderbein.dev`. The
+default `.web.app` and `.firebaseapp.com` URLs continue to work — Firebase
+Hosting custom domains are additive, not replacements.
+
+DNS records (Porkbun, holderbein.dev zone):
+- `A    tickets             199.36.158.100`
+- `TXT  tickets             hosting-site=msds-603-victors-demons`
+- `TXT  _acme-challenge.tickets   <Let's Encrypt challenge token from Firebase>`
+
+The custom domain must also be in:
+- Firebase Auth authorized domains (Firebase Console → Authentication → Settings)
+- The Google OAuth client's "Authorized JavaScript origins" and "Authorized
+  redirect URIs" (Cloud Console → APIs & Services → Credentials → Web client)
+- The backend CORS allowlist (`backend/api/main.py`)
+
+## Cold-start handling
+
+When the backend has scaled to zero, the first `/tickets` call after
+sign-in can occasionally return a 5xx before the DB pool is ready.
+`refreshTickets()` retries up to 3 times with exponential backoff
+(700ms, 1.4s, 2.1s) before giving up. While waiting for the first
+response, the Tickets tab shows a "Loading tickets…" placeholder
+(`#tickets-loading`) — the "No tickets ingested yet" placeholder is
+only revealed by a successful empty response, never by a failed call.
+This avoids the "0 tickets" flash on cold loads that the user has
+to clear with a manual Refresh.
 
 ## Tickets View
 
@@ -263,6 +297,13 @@ There is no `localStorage` state for the tickets list.
 
 Each row exposes thumbs-up / thumbs-down buttons that call `POST /feedback`
 using the row's `prediction_id`.
+
+Pending tickets (no prediction yet) appear with a grey "Pending" badge below
+the classified tickets, controlled by the "Show pending" toggle (on by
+default).
+
+Drag-and-drop CSV upload (`POST /tickets/upload-csv`); rows are inserted as
+pending tickets and scored by the nightly batch job.
 
 ## Tests
 

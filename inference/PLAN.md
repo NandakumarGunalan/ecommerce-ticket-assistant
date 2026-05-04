@@ -1,5 +1,14 @@
 # Inference Plan
 
+> **HISTORICAL DESIGN DOCUMENT.** This file describes the original v1 plan
+> for the inference pipeline. The plan has since drifted from reality.
+> Production schema lives in `backend/db/schema.sql`. Production batch SQL
+> lives in `inference/db.py`. The "Predictions Table Contract" section
+> below is **wrong** — it describes columns (`batch_run_id`, `predicted_at`)
+> and a unique constraint that don't exist in production. Use this file
+> for context on the original design rationale, not for what the system
+> currently does.
+
 ## Goal
 
 Serve the fine-tuned DistilBERT priority classifier (registered as `distilbert-priority` in Vertex AI Model Registry) as a **batch scoring job** running on Cloud Run Jobs, with the architecture designed so that adding an **online FastAPI endpoint** on Cloud Run is a small follow-up, not a rewrite.
@@ -254,39 +263,7 @@ python -m inference.batch_predict \
 
 ## Predictions Table Contract
 
-This is the schema contract we hand to the teammate. They own the migration that creates this table; we own the writes.
-
-**Proposed schema (Postgres DDL — adapt for whatever DB the teammate picks):**
-
-```sql
-CREATE TABLE predictions (
-    ticket_id         TEXT        NOT NULL,
-    model_version     TEXT        NOT NULL,  -- Vertex Registry version id, e.g. "2"
-    model_run_id      TEXT        NOT NULL,  -- training run id, e.g. "run-20260419-140149"
-    predicted_priority TEXT       NOT NULL,  -- one of: low, medium, high, urgent
-    confidence        REAL        NOT NULL,  -- max softmax probability, 0..1
-    all_scores        JSONB       NOT NULL,  -- {"low": 0.02, "medium": 0.05, ...}
-    predicted_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    batch_run_id      TEXT        NOT NULL,  -- links rows to a batch invocation
-    PRIMARY KEY (ticket_id, model_version),
-    FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
-);
-
-CREATE INDEX predictions_model_version_idx ON predictions(model_version);
-CREATE INDEX predictions_batch_run_id_idx ON predictions(batch_run_id);
-```
-
-**Write semantics:**
-- `INSERT ... ON CONFLICT (ticket_id, model_version) DO NOTHING` by default. Same ticket scored by same model version a second time is a no-op.
-- `--ticket-ids` explicit mode uses `ON CONFLICT DO UPDATE` to allow deliberate re-scores.
-- Each inference batch (`--batch-size`) is one transaction. Partial progress on failure is fine — default selection mode will pick up the rest on retry.
-
-**Reads (out of scope here, but for the teammate):**
-- The application backend joins `tickets LEFT JOIN predictions ON tickets.ticket_id = predictions.ticket_id AND predictions.model_version = <current default>` to show the current score.
-- If they want "score as of a specific model version," they query `WHERE model_version = 'X'`.
-- Historical drift analysis: `SELECT model_version, AVG(confidence), COUNT(*) FROM predictions GROUP BY model_version` gives version-over-version comparisons for free.
-
-**DB choice: Cloud SQL for PostgreSQL.** Decided. The schema above uses Postgres-native types (`JSONB`, `TIMESTAMPTZ`) and Postgres upsert semantics (`INSERT ... ON CONFLICT`). `db.py` will use `pg8000` (pure-Python Postgres driver — no native build dependencies, smaller container) plus `cloud-sql-python-connector` for IAM-based auth from the Cloud Run Job to Cloud SQL. No passwords, no proxy sidecar, no VPC plumbing.
+→ See `backend/db/README.md` for the actual production schema. The contract originally described here was not adopted.
 
 ---
 
@@ -468,6 +445,8 @@ No external secrets.
 
 ## Teammate Handoff
 
+**Status: Complete (historical).** All teammate-handoff items below were resolved during initial deployment. Kept as a record.
+
 The inference pipeline is fully deployed and end-to-end verified as of Phase 3 (see smoke-test note above). What's left to go live in production is the teammate's Cloud SQL instance plus a small wire-up step — no code changes on this branch.
 
 ### What's already in place (owned by this branch)
@@ -538,32 +517,7 @@ After that succeeds, Cloud Scheduler wiring (see next section) is ~5 lines of gc
 
 ## Future: Nightly Automated Classification
 
-The intended steady-state is a nightly Cloud Scheduler cron that invokes this batch job with its default selection mode — "score all unscored tickets under the current default model version."
-
-```
-Cloud Scheduler (daily 03:00 UTC = 20:00 PST / 19:00 PDT the previous evening)
-           │
-           ▼
-Cloud Run Job: inference/batch_predict.py  (this branch)
-   - queries DB for unscored tickets under current model version
-   - runs inference on CPU
-   - inserts results into predictions table
-   - emits per-prediction + per-run structured logs
-```
-
-No extract step, no publisher step, no GCS interchange. The batch job talks to the DB directly on both ends. Daily cron is three commands to wire up once the DB is in place:
-
-```bash
-gcloud run jobs deploy distilbert-priority-batch --image=... (already done)
-gcloud scheduler jobs create http distilbert-priority-nightly \
-    --schedule="0 3 * * *" \
-    --uri="<cloud run job exec endpoint>" \
-    --oauth-service-account-email=<scheduler SA>
-```
-
-Not built in v1 because (a) the DB doesn't exist yet and (b) it's trivial to add once it does.
-
-**Retrain flow (future):** when a new model version is registered with `is_default_version=True`, the next nightly run will see "tickets that don't have a row for the new `model_version`" — which is every ticket — and score all of them. At our scale this is fine (thousands of rows, minutes of CPU). At real scale you'd want a more selective policy — either a `--since` window or an explicit backfill job on a separate schedule. Document as a follow-up when volumes grow.
+**Status: Implemented.** A Cloud Scheduler job `distilbert-batch-nightly` (location `us-central1`) runs `0 10 * * *` UTC daily, invoking the Cloud Run Job via OAuth-authenticated POST to its v2 admin endpoint. The scheduler runs as `inference-runner@msds-603-victors-demons.iam.gserviceaccount.com` (must hold `roles/run.invoker` on the job, plus the Cloud Scheduler service agent must hold `roles/iam.serviceAccountTokenCreator` on that SA).
 
 ---
 

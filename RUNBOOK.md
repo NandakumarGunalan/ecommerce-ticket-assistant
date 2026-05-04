@@ -383,14 +383,108 @@ bash backend/db/apply_migration.sh backend/db/migrations/002_add_ticket_resolved
 
 After applying, update `backend/db/schema.sql` so a fresh DB built with `apply_schema.sh` ends up in the same state.
 
+## Nightly batch scheduler
+
+- Cloud Scheduler job: `distilbert-batch-nightly` (location: `us-central1`)
+- Schedule: `0 10 * * *` UTC (= 2 AM Pacific Standard Time)
+- Target: POST to the Cloud Run Job v2 admin endpoint:
+  `https://run.googleapis.com/v2/projects/msds-603-victors-demons/locations/us-central1/jobs/distilbert-priority-batch:run`
+- Auth: OAuth, service account `inference-runner@msds-603-victors-demons.iam.gserviceaccount.com`
+- Required IAM (one-time setup):
+  - `inference-runner` SA needs `roles/run.invoker` on the job
+  - Cloud Scheduler service agent (`service-48533944424@gcp-sa-cloudscheduler.iam.gserviceaccount.com`) needs `roles/iam.serviceAccountTokenCreator` on `inference-runner`
+
+Manual trigger:
+
+```bash
+gcloud scheduler jobs run distilbert-batch-nightly \
+  --location=us-central1 --project=msds-603-victors-demons
+```
+
+Pause/resume:
+
+```bash
+gcloud scheduler jobs pause distilbert-batch-nightly \
+  --location=us-central1 --project=msds-603-victors-demons
+gcloud scheduler jobs resume distilbert-batch-nightly \
+  --location=us-central1 --project=msds-603-victors-demons
+```
+
+## Custom domain (`tickets.holderbein.dev`)
+
+The frontend is reachable at:
+
+- https://msds-603-victors-demons.web.app (default)
+- https://msds-603-victors-demons.firebaseapp.com (default alias)
+- https://tickets.holderbein.dev (custom)
+
+Custom domain pieces (all required, all already configured):
+
+1. Firebase Hosting domain registered (REST: POST sites/.../domains)
+2. DNS at Porkbun: A record `tickets -> 199.36.158.100`,
+   TXT `tickets -> hosting-site=msds-603-victors-demons`,
+   TXT `_acme-challenge.tickets -> <Let's Encrypt token from Firebase>`
+3. Firebase Auth authorized domains list includes `tickets.holderbein.dev`
+4. Google OAuth web client (`48533944424-ovpv2i1f9aecvr30jj1ipgg9eo2ho8l1`)
+   has `https://tickets.holderbein.dev` in BOTH "Authorized JavaScript
+   origins" AND "Authorized redirect URIs"
+   (the redirect URI must be `https://tickets.holderbein.dev/__/auth/handler`)
+5. Backend CORS allowlist includes `https://tickets.holderbein.dev`
+
+Forgetting any one of these breaks sign-in or API calls from the custom
+domain only — the default URLs continue to work, which makes the bug
+easy to miss in testing.
+
+## Database users (two-user model)
+
+The Cloud SQL Postgres instance has two distinct application users:
+
+- `app_user` — used by the backend API (password auth, secret in Secret
+  Manager: `ticket-assistant-db-app-password`)
+- `inference-runner@msds-603-victors-demons.iam` — used by the batch
+  inference Cloud Run Job (IAM auth, no password)
+
+This split was intentional in the original design (no secrets for batch),
+but does mean two different failure modes when DB connectivity breaks.
+When debugging "the DB is broken," check which path:
+
+- 502 from `/tickets` -> backend `app_user` path
+- Cloud Run Job exit 1 with `SQLSTATE 28000` -> IAM-auth path
+
+## Cloud SQL IAM auth requires a database flag
+
+The Cloud SQL instance must have `cloudsql.iam_authentication=on` in
+its database flags for the IAM-auth path to work. Without it, the
+batch job fails with `Cloud SQL IAM service account authentication failed`
+even when the IAM Postgres user, IAM project roles, and grants are all
+correct. The flag is OFF by default for CLI-created instances; only
+the Console enables it on creation.
+
+To verify:
+
+```bash
+gcloud sql instances describe ticket-assistant-db \
+  --project=msds-603-victors-demons \
+  --format='value(settings.databaseFlags)'
+```
+
+If absent, set it (will restart the instance, ~1-2 min downtime):
+
+```bash
+gcloud sql instances patch ticket-assistant-db \
+  --project=msds-603-victors-demons \
+  --database-flags=cloudsql.iam_authentication=on
+```
+
+Note: `--database-flags` REPLACES the entire flag set, so include any
+other flags too if there are any.
+
 ## Known issues / tech debt
 
 - **`/healthz` is GFE-intercepted** on the Cloud Run backend for some service configurations. Use `/health` (the canonical alias) for smoke tests and uptime probes.
 - **CORS allowlist is fixed** to the prod Firebase Hosting origins + `localhost` (see `backend/api/main.py::_install_cors`). Firebase Hosting preview channels (`<site>--<channel>-<hash>.web.app`) are not in the list; add the preview origin to `_install_cors` and redeploy the backend before testing against a preview channel.
-- **No custom domain on Firebase Hosting** yet. The frontend ships at `.firebaseapp.com` / `.web.app`. Remediation: add the domain in Firebase Console -> Hosting -> Add custom domain, then add it to Firebase Auth's authorized-domains list and to the backend CORS allowlist.
-- **No automated retraining pipeline.** Retrains are manual via `.venv/bin/python training/launch.py`. Remediation: Cloud Scheduler -> Workflows -> the existing `launch.py` entry point would be a minimal follow-up.
+- **No automated retraining pipeline.** Retrains are manual via `.venv/bin/python training/launch.py`. Remediation: Workflows -> the existing `launch.py` entry point would be a minimal follow-up.
 - **No monitoring dashboards** beyond Cloud Logging. Remediation: a Looker Studio view over `predictions` + `feedback` to show model quality over time.
-- **CSV upload path** (bulk ticket ingestion) is scoped out. Batch inference runs against whatever sits in the `tickets` table.
 
 ## Emergency: something is broken
 

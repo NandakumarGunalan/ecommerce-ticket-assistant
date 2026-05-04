@@ -31,6 +31,7 @@ req/min/user rate limit.
 | GET    | `/me`                                         | `{uid, email, display_name}` from the verified token.                |
 | POST   | `/predict`                                    | Stateless score — no DB write.                                       |
 | POST   | `/tickets`                                    | Score + INSERT ticket + INSERT prediction, scoped to `user.uid`.     |
+| POST   | `/tickets/upload-csv`                         | Multipart `file` (CSV); inserts ≤500 pending tickets (`source='csv'`) for the caller; returns `{accepted, skipped}`. Skips rows with text < 5 chars. Picks column `text`/`message`/`description`/`ticket`/`ticket_text` (case-insensitive), else first column. |
 | GET    | `/tickets?limit=50&include_resolved=false`    | Caller's tickets only, sorted by priority rank.                      |
 | POST   | `/tickets/{id}/resolve`                       | Mark the ticket resolved (owner-only).                               |
 | POST   | `/tickets/{id}/unresolve`                     | Clear `resolved_at`.                                                 |
@@ -49,6 +50,26 @@ Validation: `ticket_text` is required, non-empty, ≤ 10,000 chars;
 | `DB_USER`             | Postgres role (`app_user`)                                              |
 | `DB_PASSWORD_SECRET`  | Secret Manager secret name (`ticket-assistant-db-app-password`)         |
 | `GCP_PROJECT`         | Project id that owns the secret                                         |
+
+## Database access
+
+The backend connects to Cloud SQL Postgres as `app_user`, authenticating
+with a password fetched from Secret Manager
+(`ticket-assistant-db-app-password`) — **not** IAM database
+authentication. The inference batch job uses IAM auth as a separate
+path. See `backend/db/README.md` for the full two-user model.
+
+## Dependencies
+
+Notable runtime requirements (see `backend/requirements.txt` for the
+pinned set):
+
+- `fastapi`, `uvicorn` — HTTP layer.
+- `firebase-admin` — ID token verification.
+- `google-cloud-secret-manager`, `cloud-sql-python-connector`,
+  `pg8000` — Cloud SQL + secret access.
+- `python-multipart` — required by FastAPI's `UploadFile` /
+  multipart form parsing on `POST /tickets/upload-csv`.
 
 ## Local development
 
@@ -150,18 +171,20 @@ gcloud logging read \
 
 Because the frontend sends `Authorization: Bearer <token>` on every
 protected call, wildcard CORS is not viable — the browser must send
-credentials from a known origin. `_install_cors` in
-`backend/api/main.py` pins the allowlist to:
+credentials from a known origin. See
+`backend/api/main.py::_install_cors` for the source of truth — that
+function is the canonical allowlist. Current entries:
 
+- `https://ticket-frontend-48533944424.us-central1.run.app`
 - `https://msds-603-victors-demons.web.app`
 - `https://msds-603-victors-demons.firebaseapp.com`
-- `http://localhost:5173` / `http://127.0.0.1:5173`
-- (the now-deleted `ticket-frontend` Cloud Run URL, left in for revision
-  parity; safe to drop in a future cleanup)
+- `https://tickets.holderbein.dev`
+- `http://localhost:5173`
+- `http://127.0.0.1:5173`
 
 Firebase Hosting preview channels are **not** in the list. If you need
-to test against a preview channel, add its origin explicitly and
-redeploy the backend.
+to test against a preview channel, add its origin explicitly in
+`_install_cors` and redeploy the backend.
 
 ## File layout
 
