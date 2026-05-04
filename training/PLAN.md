@@ -1,5 +1,11 @@
 # DistilBERT Fine-Tuning Plan
 
+> **HISTORICAL DESIGN DOCUMENT.** This file is the original build plan.
+> Most of what's described here has been implemented. The current system
+> may have drifted from this design — for the production-truth view of
+> how the code actually works, read the source files referenced inline
+> in this doc, or `RUNBOOK.md` at the repo root.
+
 ## Goal
 
 Fine-tune `distilbert-base-uncased` on the synthetic ticket dataset to predict `priority` (low / medium / high / urgent) from `ticket_text`. Training runs on **Vertex AI Custom Training** with a GPU, tracked via **Vertex AI Experiments**, and the final model is registered in **Vertex AI Model Registry**.

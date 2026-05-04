@@ -1,5 +1,15 @@
 # Online Endpoint Plan
 
+> **HISTORICAL DESIGN DOCUMENT.** This file is the original build plan.
+> Most of what's described here has been implemented. The current system
+> may have drifted from this design — for the production-truth view of
+> how the code actually works, read the source files referenced inline
+> in this doc, or `RUNBOOK.md` at the repo root.
+>
+> **Status:** the online inference service `distilbert-priority-online` IS
+> deployed as a Cloud Run service, IAM-restricted, at
+> `https://distilbert-priority-online-48533944424.us-central1.run.app`.
+
 ## Goal
 
 Serve the fine-tuned DistilBERT priority classifier (registered as `distilbert-priority` in Vertex AI Model Registry) as a **real-time FastAPI endpoint** running on Cloud Run, reusing the shared `predictor.py` core from the batch branch. One ticket in, one prediction out. Authenticated callers only.

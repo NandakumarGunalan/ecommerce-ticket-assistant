@@ -1,10 +1,14 @@
-# Ecommerce Ticket Triage Assistant
+# Turbo Triage (Ecommerce Ticket Triage Assistant)
 
-A multi-service GCP system that triages inbound customer-support tickets by predicted priority (low / medium / high / urgent). A support agent signs in with Google, pastes a ticket into the web console, the backend routes it through a fine-tuned DistilBERT classifier served on Cloud Run, and the ticket + prediction + agent feedback are persisted to Cloud SQL Postgres — scoped to the authenticated user — for later retraining and analysis.
+> Product name: **Turbo Triage**. The repo / GCP project / image names retain the
+> original `ecommerce-ticket-*` identifiers — that's the historical name and
+> changing it now would be a code-and-infra rename for no real benefit.
+
+A multi-service GCP system that triages inbound customer-support tickets by predicted priority (low / medium / high / urgent). A support agent signs in with Google, pastes (or uploads a CSV of) tickets into the web console, the backend routes single tickets through a fine-tuned DistilBERT classifier served on Cloud Run, and the ticket + prediction + agent feedback are persisted to Cloud SQL Postgres — scoped to the authenticated user — for later retraining and analysis. Bulk CSV-uploaded tickets land as "pending" rows and are scored by the nightly batch job.
 
 ## Live URLs
 
-- Frontend: https://msds-603-victors-demons.firebaseapp.com (Firebase Hosting — primary; `https://msds-603-victors-demons.web.app` is an equivalent alias)
+- Frontend: https://tickets.holderbein.dev (custom domain — primary). The default Firebase Hosting URLs continue to work: `https://msds-603-victors-demons.web.app` and `https://msds-603-victors-demons.firebaseapp.com`.
 - Backend API: https://ticket-backend-api-48533944424.us-central1.run.app
 - Model endpoint: https://distilbert-priority-online-48533944424.us-central1.run.app (IAM-restricted; only the backend SA can invoke it)
 
@@ -73,8 +77,9 @@ A multi-service GCP system that triages inbound customer-support tickets by pred
 5. `GET /tickets`: returns the caller's tickets only; by default excludes rows with a non-null `resolved_at` (pass `?include_resolved=true` to include them). Sorted urgent > high > medium > low, then newest first.
 6. Tickets can be resolved (`POST /tickets/{id}/resolve`) and reopened (`POST /tickets/{id}/unresolve`); resolution state is stored as a `resolved_at` timestamp on the ticket row.
 7. `POST /feedback` records a thumbs-up / thumbs-down against a `prediction_id`.
+8. `POST /tickets/upload-csv` accepts a multipart CSV file and inserts up to 500 rows as **pending** tickets (`source='csv'`) — no synchronous scoring. Pending tickets show in the Tickets tab with a grey "Pending" badge until the nightly batch job scores them.
 
-The Cloud Run Job `distilbert-priority-batch` is the same container image as the online service, invoked with a different entrypoint. It reads unscored tickets from Cloud SQL and writes predictions back in bulk. Not currently wired to a scheduler — invoke manually.
+The Cloud Run Job `distilbert-priority-batch` is the same container image as the online service, invoked with a different entrypoint. It reads unscored tickets from Cloud SQL via IAM auth (separate user from the backend — see "Database users" in `backend/db/README.md`) and writes predictions back in bulk. Wired to **Cloud Scheduler** (`distilbert-batch-nightly`) — runs `0 10 * * *` UTC (= 2 AM Pacific). See `RUNBOOK.md` for the manual-trigger and pause/resume commands.
 
 ## API surface
 
@@ -89,6 +94,7 @@ All routes are served by `ticket-backend-api`. Only `GET /health` is public; eve
 | GET  | `/tickets?limit=50&include_resolved=false` | Authed. Caller's tickets only. `include_resolved` defaults to `false`. |
 | POST | `/tickets/{id}/resolve` | Authed. Marks the ticket resolved (owner-only). |
 | POST | `/tickets/{id}/unresolve` | Authed. Clears `resolved_at`. |
+| POST | `/tickets/upload-csv` | Authed. Multipart `file` field. Inserts up to 500 pending tickets (`source='csv'`); skips rows shorter than 5 chars. Returns `{accepted, skipped}`. |
 | POST | `/feedback` | Authed. Thumbs up/down against a `prediction_id`. |
 
 The backend also registers `/healthz` as an alias to `/health`, but Cloud Run's ingress intercepts `/healthz` in some configurations — use `/health` for smoke tests.
@@ -99,13 +105,16 @@ Project ID: `msds-603-victors-demons` — Region: `us-central1`
 
 | Resource | Name |
 | --- | --- |
-| Cloud SQL | `ticket-assistant-db` (Postgres 15, `db-f1-micro`, 10 GB) |
+| Cloud SQL | `ticket-assistant-db` (Postgres 15, `db-f1-micro`, 10 GB). **Required flag:** `cloudsql.iam_authentication=on` (without it the batch job's IAM auth fails — see `RUNBOOK.md`). |
+| Cloud SQL users | `app_user` (password, used by backend) and `inference-runner@msds-603-victors-demons.iam` (IAM, used by batch job). See `backend/db/README.md` for the two-user model. |
 | Cloud Run Service | `distilbert-priority-online` |
 | Cloud Run Service | `ticket-backend-api` |
 | Cloud Run Job | `distilbert-priority-batch` |
-| Firebase Hosting site | `msds-603-victors-demons` (default URLs: `.firebaseapp.com` + `.web.app`) |
+| Cloud Scheduler | `distilbert-batch-nightly` (location `us-central1`, schedule `0 10 * * *` UTC, target = batch job v2 admin endpoint) |
+| Firebase Hosting site | `msds-603-victors-demons` (default URLs `.firebaseapp.com` + `.web.app`); custom domain **`tickets.holderbein.dev`** (Porkbun DNS, see `RUNBOOK.md`) |
 | Firebase Web App | `ticket-console` (App ID `1:48533944424:web:1caab7a98902277a3823dd`) |
-| Firebase Auth | Google provider; authorized domains include `localhost`, `msds-603-victors-demons.firebaseapp.com`, `msds-603-victors-demons.web.app` |
+| Firebase Auth | Google provider; authorized domains: `localhost`, `msds-603-victors-demons.firebaseapp.com`, `msds-603-victors-demons.web.app`, `tickets.holderbein.dev` |
+| OAuth web client | `48533944424-ovpv2i1f9aecvr30jj1ipgg9eo2ho8l1`. Authorized JS origins + redirect URIs must include all hosts the frontend is served from (see `RUNBOOK.md` "Custom domain"). |
 | Vertex AI Model Registry | `distilbert-priority` (id `174724492281511936`) |
 | Artifact Registry | `ml-repo` (Docker) |
 | GCS bucket | `msds603-mlflow-artifacts` (data + model artifacts; bucket name is historical) |
@@ -113,7 +122,7 @@ Project ID: `msds-603-victors-demons` — Region: `us-central1`
 | Runtime SA | `inference-runner@msds-603-victors-demons.iam.gserviceaccount.com` |
 | Firebase Admin SA | `firebase-adminsdk-fbsvc@msds-603-victors-demons.iam.gserviceaccount.com` (used by the backend to verify ID tokens via ADC) |
 
-The runtime SA has `roles/cloudsql.client` project-wide, `roles/secretmanager.secretAccessor` on both DB secrets, and `roles/run.invoker` on `distilbert-priority-online`.
+The runtime SA `inference-runner` has: `roles/cloudsql.client` and `roles/cloudsql.instanceUser` (DB), `roles/secretmanager.secretAccessor` on both DB secrets, `roles/run.invoker` on `distilbert-priority-online` (so the backend can call the model) **and** on `distilbert-priority-batch` (so Cloud Scheduler can trigger the batch job). The Cloud Scheduler service agent also has `roles/iam.serviceAccountTokenCreator` on `inference-runner` so it can mint OAuth tokens for the scheduled invocation.
 
 > Note: the previous Cloud Run frontend service `ticket-frontend` has been **deleted**. The frontend is served by Firebase Hosting; do not redeploy the Cloud Run service.
 
@@ -170,11 +179,15 @@ Training smoke test (CPU, tiny subset):
 
 ## Subsystem docs
 
-- `backend/README.md` — FastAPI backend, routes, env vars, auth, rate limiting, deploy commands
-- `backend/db/README.md` — Cloud SQL instance, schema, migrations, password rotation, Auth Proxy usage
-- `frontend/README.md` — static web console, Firebase Auth + GIS sign-in, backend contract, mock mode, Firebase Hosting deploy
-- `inference/PLAN.md` — batch inference design + DB-direct rationale
-- `inference/ONLINE_PLAN.md` — online endpoint design, IAM, demo-day playbook
+**Currently authoritative:**
+- `backend/README.md` — FastAPI backend: routes, env vars, auth, rate limiting, deploy commands, CSV upload, two-user DB model
+- `backend/db/README.md` — Cloud SQL instance: schema, migrations, IAM database user setup, `cloudsql.iam_authentication` flag, Auth Proxy usage, password rotation, two-user model
+- `frontend/README.md` — Turbo Triage web console: Firebase Auth + GIS sign-in, backend contract, mock mode, custom-domain config, cold-start retry semantics, Firebase Hosting deploy
+- `RUNBOOK.md` — Day-2 operations: nightly batch scheduler, custom domain, IAM-auth gotchas, emergency procedures
+
+**Historical design docs** (kept for context; production may have drifted — read the source files they reference for current behaviour):
+- `inference/PLAN.md` — batch inference design + DB-direct rationale (the "Predictions Table Contract" section is **superseded** — the production schema is in `backend/db/README.md`)
+- `inference/ONLINE_PLAN.md` — online endpoint design + IAM playbook
 - `training/PLAN.md` — DistilBERT fine-tune pipeline on Vertex AI
 - `synthetic_data/PLAN.md` — synthetic ticket generation
 
@@ -187,11 +200,10 @@ Training smoke test (CPU, tiny subset):
 ## Known issues / tech debt
 
 - Cloud Run's ingress intercepts `/healthz` on some service configurations; the backend exposes `/health` as the canonical alias. Use `/health` for smoke tests and uptime probes.
-- Backend CORS allowlist is a fixed set of prod origins + `localhost` (see `backend/api/main.py`). Firebase Hosting preview channels (`<site>--<channel>-<hash>.web.app`) are not in the allowlist; add them explicitly or redeploy the backend with the preview origin before testing against a preview.
-- No custom domain on Firebase Hosting yet — the frontend ships at `.firebaseapp.com` / `.web.app`.
+- Backend CORS allowlist is a fixed set of prod origins + `localhost` (see `backend/api/main.py::_install_cors`). Firebase Hosting preview channels (`<site>--<channel>-<hash>.web.app`) are not in the allowlist; add them explicitly or redeploy the backend with the preview origin before testing against a preview.
 - No automated retraining pipeline. Retrains are manual via `.venv/bin/python training/launch.py`. Cloud Scheduler + Workflows would be a straightforward follow-up.
 - No monitoring dashboards beyond Cloud Logging. A Looker Studio view over `predictions` + `feedback` is a natural next step.
-- CSV upload path (bulk ticket ingestion) is scoped out. Batch inference runs against whatever sits in the `tickets` table.
+- The `predictions` table has no `UNIQUE(ticket_id, model_version)` constraint. The batch job is therefore not idempotent — re-running it can write duplicate prediction rows for the same ticket. The backend's `list_tickets` collapses to the most recent prediction via `DISTINCT ON`, so duplicates are harmless at read time, but they bloat the table. A future migration could add the constraint and switch the batch back to upsert semantics (the `inference/db.py` SQL templates already document this path).
 
 ## Reminders
 

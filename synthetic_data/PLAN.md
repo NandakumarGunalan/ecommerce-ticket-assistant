@@ -1,5 +1,11 @@
 # Synthetic Data Generation Plan
 
+> **HISTORICAL DESIGN DOCUMENT.** This file is the original build plan.
+> Most of what's described here has been implemented. The current system
+> may have drifted from this design — for the production-truth view of
+> how the code actually works, read the source files referenced inline
+> in this doc, or `RUNBOOK.md` at the repo root.
+
 ## Goal
 
 Generate exactly 11,340 synthetic e-commerce customer support tickets for fine-tuning an NLP classification model. Each row will have an LLM-generated ticket text and a deterministic **priority label** (low / medium / high / urgent) derived from the row's structured metadata.
