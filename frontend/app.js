@@ -463,8 +463,30 @@ function buildTicketItem(t) {
       ${textBlock}
       <div class="ticket-item__footer">
         <span>Awaiting overnight batch scoring</span>
+        <button class="secondary-button resolve-btn" type="button" data-action="${isResolved ? "unresolve" : "resolve"}">${resolveLabel}</button>
       </div>
     `;
+
+    const resolveBtn = item.querySelector(".resolve-btn");
+    if (resolveBtn) {
+      resolveBtn.addEventListener("click", async () => {
+        const ticketId = item.dataset.ticketId;
+        if (!ticketId) return;
+        resolveBtn.disabled = true;
+        try {
+          if (resolveBtn.dataset.action === "resolve") {
+            await apiResolveTicket(ticketId);
+          } else {
+            await apiUnresolveTicket(ticketId);
+          }
+          await refreshTickets();
+        } catch (err) {
+          console.warn("Resolve/reopen failed", err);
+          resolveBtn.disabled = false;
+          showToast("Could not update ticket. Try again.", "danger");
+        }
+      });
+    }
   } else {
     const confPct =
       typeof t.confidence === "number" ? `${Math.round(t.confidence * 100)}% confidence` : "--";
