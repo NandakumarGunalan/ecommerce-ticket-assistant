@@ -164,7 +164,10 @@ function showToast(message, tone = "info", ttl = 4000) {
 // no visible explanation.
 async function doFetchWithToken(url, options, forceRefresh) {
   const headers = new Headers(options.headers || {});
-  if (options.body && !headers.has("Content-Type")) {
+  // Don't force JSON Content-Type for FormData uploads — the browser must set
+  // multipart/form-data with its own boundary, which it skips if we preset it.
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (options.body && !headers.has("Content-Type") && !isFormData) {
     headers.set("Content-Type", "application/json");
   }
   if (!useMockApi) {
