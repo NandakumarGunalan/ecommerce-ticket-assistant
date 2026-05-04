@@ -63,6 +63,7 @@
 
         <section class="view view--active" id="classify-view" data-view="classify">
           <section class="workspace">
+            <div class="composer-column">
             <form class="composer" id="ticket-form">
               <div class="composer-header">
                 <label for="ticket-text">Customer message</label>
@@ -97,6 +98,21 @@
                 </button>
               </div>
             </form>
+
+            <!-- CSV batch upload -->
+            <div class="csv-upload-area" id="csv-drop-zone" role="region" aria-label="Batch CSV upload">
+              <input type="file" id="csv-file-input" accept=".csv,text/csv" hidden />
+              <div class="csv-drop-inner" id="csv-drop-inner">
+                <p class="csv-drop-title">Batch upload</p>
+                <p class="csv-drop-sub">Drop a CSV here or <button class="text-button" type="button" id="csv-browse-btn">browse</button></p>
+                <p class="csv-drop-hint">One ticket per row · up to 500 rows · scored overnight by the batch job</p>
+              </div>
+              <div class="csv-uploading hidden" id="csv-uploading">
+                <p class="csv-drop-title">Uploading…</p>
+              </div>
+            </div>
+
+            </div><!-- /.composer-column -->
 
             <aside class="result-area" aria-labelledby="result-title">
               <p class="eyebrow">Prediction</p>
@@ -150,6 +166,10 @@
               <h2>Sorted by priority</h2>
             </div>
             <div class="tickets-header__controls">
+              <label class="show-resolved">
+                <input type="checkbox" id="show-pending-toggle" checked />
+                <span>Show pending</span>
+              </label>
               <label class="show-resolved">
                 <input type="checkbox" id="show-resolved-toggle" />
                 <span>Show resolved</span>
