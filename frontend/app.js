@@ -38,6 +38,7 @@ const views = document.querySelectorAll("[data-view]");
 const ticketCount = document.querySelector("#ticket-count");
 const ticketList = document.querySelector("#ticket-list");
 const ticketsEmpty = document.querySelector("#tickets-empty");
+const ticketsLoading = document.querySelector("#tickets-loading");
 const refreshTicketsButton = document.querySelector("#refresh-tickets-button");
 const showResolvedToggle = document.querySelector("#show-resolved-toggle");
 const showPendingToggle = document.querySelector("#show-pending-toggle");
@@ -567,6 +568,9 @@ function renderTickets(tickets) {
   const total = classified.length + visiblePending.length;
 
   ticketCount.textContent = String(classified.length + pending.length);
+  // The loading placeholder is only relevant before the first successful
+  // fetch — once we've rendered anything (even an empty list), hide it.
+  if (ticketsLoading) ticketsLoading.classList.add("hidden");
   ticketsEmpty.classList.toggle("hidden", total > 0);
   ticketList.innerHTML = "";
 
@@ -575,13 +579,31 @@ function renderTickets(tickets) {
 }
 
 // ---------- Flow ----------
-async function refreshTickets() {
-  try {
-    const tickets = await apiListTickets(50);
-    renderTickets(tickets);
-  } catch (err) {
-    console.warn("Failed to list tickets", err);
-    renderTickets([]);
+// On the very first refresh after sign-in the backend can be cold (Cloud
+// Run scale-from-zero, ~3-8s) and the request occasionally returns a 5xx
+// before the DB pool is ready. Previously we'd swallow that and render an
+// empty list — indistinguishable from "you actually have no tickets" and
+// requiring a manual Refresh click. We now retry transient failures with
+// short backoff and only render an empty list if the backend genuinely
+// returned an empty array.
+async function refreshTickets({ retries = 3, retryDelayMs = 700 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const tickets = await apiListTickets(50);
+      renderTickets(tickets);
+      return;
+    } catch (err) {
+      const isLast = attempt === retries;
+      if (isLast) {
+        console.warn("Failed to list tickets after retries", err);
+        showToast("Could not load tickets. Press Refresh to try again.", "warn");
+        // Don't overwrite whatever's on screen; the empty state placeholder
+        // is more honest than "0 tickets" when we don't actually know.
+        return;
+      }
+      console.warn(`List tickets attempt ${attempt + 1} failed, retrying...`, err);
+      await new Promise((r) => setTimeout(r, retryDelayMs * (attempt + 1)));
+    }
   }
 }
 
