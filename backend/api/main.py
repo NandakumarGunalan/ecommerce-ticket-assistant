@@ -70,6 +70,8 @@ def _install_cors(application: FastAPI) -> None:
             # the Cloud Run origin.
             "https://msds-603-victors-demons.web.app",
             "https://msds-603-victors-demons.firebaseapp.com",
+            # Custom domain
+            "https://tickets.holderbein.dev",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
         ],
