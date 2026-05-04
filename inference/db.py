@@ -5,9 +5,7 @@ Responsibilities:
 - Read tickets that need scoring for a given model version (three selection
   modes: default unscored-only, ``--since`` date filter, explicit
   ``--ticket-ids`` list).
-- Write ``PredictionRow`` rows into the ``predictions`` table with correct
-  ON CONFLICT semantics (skip by default, upsert in explicit-ids re-score
-  mode).
+- Write ``PredictionRow`` rows into the ``predictions`` table.
 
 All SQL is centralized here so that ``predictor.py`` and ``batch_predict.py``
 don't carry DB knowledge. Production uses ``pg8000`` + Google's
@@ -16,6 +14,14 @@ sidecar. Unit tests inject a SQLAlchemy engine pointed at an in-memory SQLite
 database; the client detects the dialect and swaps a SQLite-compatible
 INSERT template accordingly (testing-only accommodation — production is
 strictly Postgres).
+
+Schema notes (matches ``backend/db/schema.sql`` — the production source of
+truth). The inference module historically targeted a different schema with
+``ticket_id``/``ticket_text`` column names and a ``(ticket_id, model_version)``
+unique constraint; we now alias those columns in SELECTs and accept that
+re-running the batch can produce additional prediction rows for the same
+ticket. The backend's ``list_tickets`` query already collapses to the most
+recent prediction via ``DISTINCT ON``, so duplicates are harmless.
 """
 from __future__ import annotations
 
@@ -51,10 +57,11 @@ class TicketRow:
 class PredictionRow:
     """One row destined for the predictions table.
 
-    Shape tracks the schema contract declared in ``inference/PLAN.md``
-    (Predictions Table Contract). ``predicted_at`` is populated by the DB
-    default (``NOW()``) on insert and by ``NOW()`` on update, so it is not
-    carried on this struct.
+    ``created_at`` is populated by the DB default (``NOW()``) so it is not
+    carried on this struct. ``batch_run_id`` is retained for log-trace
+    purposes — it surfaces in batch summary log lines but is *not* written
+    to the DB (no such column in the production schema). If we later add a
+    ``batch_run_id`` column it will start being persisted automatically.
     """
 
     ticket_id: str
@@ -72,22 +79,26 @@ class PredictionRow:
 
 # Default fetch: every ticket that has no row in predictions for this
 # model_version. LEFT JOIN + IS NULL is the canonical "anti-join" shape and
-# plays well with a composite index on predictions(ticket_id, model_version)
-# (which the primary key provides).
+# plays well with the existing index on predictions(ticket_id).
+#
+# Aliases (``t.id AS ticket_id``, ``t.text AS ticket_text``) bridge the
+# production schema (which uses ``id`` / ``text``) to the names the rest of
+# this module already uses. The backend code uses the same aliasing pattern
+# in :mod:`backend.api.db_client`.
 _FETCH_DEFAULT_SQL = """
-SELECT t.ticket_id, t.ticket_text
+SELECT t.id AS ticket_id, t.text AS ticket_text
 FROM tickets t
 LEFT JOIN predictions p
-    ON p.ticket_id = t.ticket_id AND p.model_version = :model_version
+    ON p.ticket_id = t.id AND p.model_version = :model_version
 WHERE p.ticket_id IS NULL
 """
 
 # With `since`: same anti-join, additional created_at floor.
 _FETCH_SINCE_SQL = """
-SELECT t.ticket_id, t.ticket_text
+SELECT t.id AS ticket_id, t.text AS ticket_text
 FROM tickets t
 LEFT JOIN predictions p
-    ON p.ticket_id = t.ticket_id AND p.model_version = :model_version
+    ON p.ticket_id = t.id AND p.model_version = :model_version
 WHERE p.ticket_id IS NULL AND t.created_at >= :since
 """
 
@@ -98,79 +109,56 @@ WHERE p.ticket_id IS NULL AND t.created_at >= :since
 # client expands this to an IN (...) bind list at query-build time for
 # SQLite only.
 _FETCH_BY_IDS_SQL_PG = """
-SELECT ticket_id, ticket_text
+SELECT id AS ticket_id, text AS ticket_text
 FROM tickets
-WHERE ticket_id = ANY(:ticket_ids)
+WHERE id = ANY(CAST(:ticket_ids AS UUID[]))
 """
 
-# Postgres INSERT with skip-on-conflict. RETURNING ticket_id lets us count
-# how many rows actually hit disk (as opposed to being elided by the
-# ON CONFLICT DO NOTHING clause).
+# Plain INSERT — no ON CONFLICT because the predictions table has no
+# unique constraint on (ticket_id, model_version). Re-running the batch
+# may write additional prediction rows for the same ticket; the backend's
+# ``list_tickets`` query collapses to the most recent via ``DISTINCT ON``.
+# RETURNING id lets us count how many rows actually hit disk.
+#
+# ``batch_run_id`` is intentionally NOT in the column list — no such column
+# exists in production. It survives on :class:`PredictionRow` for log
+# tracing only; if the schema later adds the column, persisting it is a
+# one-line change here.
 _INSERT_SQL_POSTGRES = """
 INSERT INTO predictions (
     ticket_id, model_version, model_run_id, predicted_priority,
-    confidence, all_scores, batch_run_id
+    confidence, all_scores
 ) VALUES (
-    :ticket_id, :model_version, :model_run_id, :predicted_priority,
-    :confidence, :all_scores, :batch_run_id
+    CAST(:ticket_id AS UUID), :model_version, :model_run_id,
+    :predicted_priority, :confidence, CAST(:all_scores AS JSONB)
 )
-ON CONFLICT (ticket_id, model_version) DO NOTHING
-RETURNING ticket_id
+RETURNING id
 """
 
-# Postgres upsert variant for the explicit re-score mode. Touches
-# predicted_at via NOW() so consumers can see that the row was refreshed.
-_UPSERT_SQL_POSTGRES = """
-INSERT INTO predictions (
-    ticket_id, model_version, model_run_id, predicted_priority,
-    confidence, all_scores, batch_run_id
-) VALUES (
-    :ticket_id, :model_version, :model_run_id, :predicted_priority,
-    :confidence, :all_scores, :batch_run_id
-)
-ON CONFLICT (ticket_id, model_version) DO UPDATE SET
-    model_run_id = EXCLUDED.model_run_id,
-    predicted_priority = EXCLUDED.predicted_priority,
-    confidence = EXCLUDED.confidence,
-    all_scores = EXCLUDED.all_scores,
-    predicted_at = NOW(),
-    batch_run_id = EXCLUDED.batch_run_id
-RETURNING ticket_id
-"""
+# In production there's no unique constraint to upsert against, so the
+# "overwrite" path collapses to the same plain INSERT — the caller still
+# gets an extra prediction row, which the backend's most-recent-wins read
+# layer treats as the live value. Until the schema gains a unique index,
+# overwrite=True and overwrite=False produce the same DB state.
+_UPSERT_SQL_POSTGRES = _INSERT_SQL_POSTGRES
 
-# SQLite-compatible variants used by the unit-test harness only. SQLite's
-# ON CONFLICT syntax shares most surface area with Postgres 9.5+ but it
-# has no NOW() function (it uses CURRENT_TIMESTAMP), no JSONB (we store
-# JSON as TEXT in the test schema), and no ANY(array) operator.
+# SQLite variants for the test harness. The test schema (see
+# inference/tests/test_db.py) mirrors the production columns: ``tickets(id,
+# text)`` and ``predictions(id, ticket_id, ...)`` — no ``batch_run_id``,
+# no unique constraint. Without JSONB, ``all_scores`` is stored as TEXT;
+# the same JSON string payload works in both dialects without branching.
 _INSERT_SQL_SQLITE = """
 INSERT INTO predictions (
     ticket_id, model_version, model_run_id, predicted_priority,
-    confidence, all_scores, batch_run_id
+    confidence, all_scores
 ) VALUES (
-    :ticket_id, :model_version, :model_run_id, :predicted_priority,
-    :confidence, :all_scores, :batch_run_id
+    :ticket_id, :model_version, :model_run_id,
+    :predicted_priority, :confidence, :all_scores
 )
-ON CONFLICT (ticket_id, model_version) DO NOTHING
-RETURNING ticket_id
+RETURNING id
 """
 
-_UPSERT_SQL_SQLITE = """
-INSERT INTO predictions (
-    ticket_id, model_version, model_run_id, predicted_priority,
-    confidence, all_scores, batch_run_id
-) VALUES (
-    :ticket_id, :model_version, :model_run_id, :predicted_priority,
-    :confidence, :all_scores, :batch_run_id
-)
-ON CONFLICT (ticket_id, model_version) DO UPDATE SET
-    model_run_id = EXCLUDED.model_run_id,
-    predicted_priority = EXCLUDED.predicted_priority,
-    confidence = EXCLUDED.confidence,
-    all_scores = EXCLUDED.all_scores,
-    predicted_at = CURRENT_TIMESTAMP,
-    batch_run_id = EXCLUDED.batch_run_id
-RETURNING ticket_id
-"""
+_UPSERT_SQL_SQLITE = _INSERT_SQL_SQLITE
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +277,11 @@ class DBClient:
             result = conn.execute(stmt, params)
             result = result.yield_per(batch_fetch_size)
             for row in result:
-                yield TicketRow(ticket_id=row[0], ticket_text=row[1])
+                # pg8000 returns UUID columns as uuid.UUID; downstream
+                # consumers (pydantic Prediction model, log payloads) expect
+                # plain strings. Coerce here so the rest of the pipeline
+                # never sees a UUID instance.
+                yield TicketRow(ticket_id=str(row[0]), ticket_text=row[1])
 
     def _build_fetch_by_ids(self, ticket_ids: List[str]):
         """Return (stmt, params) for the explicit-id fetch path.
@@ -306,11 +298,11 @@ class DBClient:
             return text(_FETCH_BY_IDS_SQL_PG), {"ticket_ids": list(ticket_ids)}
         # sqlite fallback
         if not ticket_ids:
-            return text("SELECT ticket_id, ticket_text FROM tickets WHERE 1=0"), {}
+            return text("SELECT id AS ticket_id, text AS ticket_text FROM tickets WHERE 1=0"), {}
         placeholders = ", ".join(f":id{i}" for i in range(len(ticket_ids)))
         stmt = text(
-            f"SELECT ticket_id, ticket_text FROM tickets "
-            f"WHERE ticket_id IN ({placeholders})"
+            f"SELECT id AS ticket_id, text AS ticket_text FROM tickets "
+            f"WHERE id IN ({placeholders})"
         )
         params = {f"id{i}": tid for i, tid in enumerate(ticket_ids)}
         return stmt, params
@@ -355,6 +347,7 @@ class DBClient:
             # bottleneck we can switch to a single INSERT with a VALUES
             # tuple list and still get RETURNING.
             for row in rows_list:
+                # batch_run_id is intentionally absent — see SQL templates above.
                 params: Dict[str, Any] = {
                     "ticket_id": row.ticket_id,
                     "model_version": row.model_version,
@@ -362,7 +355,6 @@ class DBClient:
                     "predicted_priority": row.predicted_priority,
                     "confidence": float(row.confidence),
                     "all_scores": json.dumps(row.all_scores),
-                    "batch_run_id": row.batch_run_id,
                 }
                 result = conn.execute(stmt, params)
                 # RETURNING may yield zero rows (skip-on-conflict) or one row.

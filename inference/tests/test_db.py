@@ -2,10 +2,8 @@
 
 The production target is Cloud SQL (Postgres). Provisioning a real Postgres
 for unit tests is overkill, so these tests run against an in-memory SQLite
-database that implements the same schema shape (with TEXT in place of JSONB
-and TEXT in place of TIMESTAMPTZ). SQLite 3.35+ supports the same
-``INSERT ... ON CONFLICT ... DO NOTHING / DO UPDATE ... RETURNING`` surface
-we use on Postgres, which is enough to exercise the insert/upsert logic.
+database that mirrors the production schema (``backend/db/schema.sql``)
+with TEXT in place of JSONB / UUID / TIMESTAMPTZ.
 
 What these tests deliberately do NOT cover:
 
@@ -13,7 +11,7 @@ What these tests deliberately do NOT cover:
 - ``NOW()`` / ``TIMESTAMPTZ`` default expression (we rely on the column
   definition in the migration, not anything DBClient does).
 - ``cloud-sql-python-connector`` wiring — that path is short, untested
-  here, and will be exercised end-to-end in Phase 3.
+  here, and exercised end-to-end via the deployed Cloud Run Job.
 
 These gaps are accepted: the SQL that runs on Postgres-in-production vs.
 SQLite-in-tests is textually identical except for the handful of
@@ -35,28 +33,33 @@ from inference.db import DBClient, PredictionRow, TicketRow
 # Schema / fixtures
 # ---------------------------------------------------------------------------
 
-# Schema-compatible subset of the production DDL, adapted for SQLite. The
-# column set and primary key match the contract in inference/PLAN.md so that
-# the same INSERT statements exercise the same conflict paths.
+# Mirrors backend/db/schema.sql with SQLite-friendly types
+# (TEXT for UUID/TIMESTAMPTZ, TEXT for JSONB). No unique constraint on
+# (ticket_id, model_version) — matches production. Multiple predictions
+# for the same ticket are allowed; the backend collapses to "most recent
+# wins" at read time.
 _TICKETS_DDL = """
 CREATE TABLE tickets (
-    ticket_id TEXT PRIMARY KEY,
-    ticket_text TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'paste',
+    user_id TEXT NOT NULL DEFAULT 'test-user',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT NULL
 )
 """
 
 _PREDICTIONS_DDL = """
 CREATE TABLE predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_id TEXT NOT NULL,
-    model_version TEXT NOT NULL,
-    model_run_id TEXT NOT NULL,
     predicted_priority TEXT NOT NULL,
     confidence REAL NOT NULL,
     all_scores TEXT NOT NULL,
-    predicted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    batch_run_id TEXT NOT NULL,
-    PRIMARY KEY (ticket_id, model_version)
+    model_version TEXT NOT NULL,
+    model_run_id TEXT NOT NULL,
+    latency_ms INTEGER NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 """
 
@@ -86,7 +89,7 @@ def seeded_engine(engine):
         for tid, ttext, cts in rows:
             conn.execute(
                 text(
-                    "INSERT INTO tickets (ticket_id, ticket_text, created_at) "
+                    "INSERT INTO tickets (id, text, created_at) "
                     "VALUES (:i, :t, :c)"
                 ),
                 {"i": tid, "t": ttext, "c": cts},
@@ -179,27 +182,33 @@ def test_ticket_ids_mode_fetches_exact_set_even_if_scored(client):
     assert sorted(_ids(fetched)) == ["T-002", "T-004"]
 
 
-def test_insert_overwrite_false_skips_duplicates(client):
-    """ON CONFLICT DO NOTHING: a second insert of the same (ticket_id,
-    model_version) returns 0 rows written and leaves the original row intact."""
+def test_insert_appends_when_same_ticket_scored_again(client):
+    """The production ``predictions`` schema has no unique constraint on
+    ``(ticket_id, model_version)``, so a second insert *adds* a row rather
+    than skipping. The backend's ``list_tickets`` collapses duplicates to
+    the most recent prediction at read time."""
     first = client.insert_predictions([_pred("T-001", confidence=0.50)])
     assert first == 1
 
-    # Try again with a different confidence; should be skipped.
     again = client.insert_predictions([_pred("T-001", confidence=0.99)])
-    assert again == 0
+    assert again == 1
 
-    # Verify the original confidence is still in the DB.
     with client._engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT confidence FROM predictions WHERE ticket_id='T-001'")
-        ).one()
-    assert row[0] == pytest.approx(0.50)
+        rows = conn.execute(
+            text(
+                "SELECT confidence FROM predictions WHERE ticket_id='T-001' "
+                "ORDER BY id"
+            )
+        ).all()
+    assert [r[0] for r in rows] == [pytest.approx(0.50), pytest.approx(0.99)]
 
 
-def test_insert_overwrite_true_updates_existing_row(client):
-    """ON CONFLICT DO UPDATE: re-score mode replaces the existing row's
-    mutable fields (model_run_id, priority, confidence, all_scores, batch_run_id)."""
+def test_insert_overwrite_true_currently_collapses_to_plain_insert(client):
+    """``overwrite=True`` is the explicit re-score escape hatch. Until the
+    schema gains a unique index on ``(ticket_id, model_version)`` it produces
+    the same effect as a plain insert: an additional prediction row that
+    becomes the most recent one. Documenting current behaviour so a future
+    schema migration that re-enables true upsert can flip this assertion."""
     client.insert_predictions([_pred("T-001", confidence=0.50)])
     updated = client.insert_predictions(
         [_pred("T-001", confidence=0.99, predicted_priority="urgent")],
@@ -208,14 +217,16 @@ def test_insert_overwrite_true_updates_existing_row(client):
     assert updated == 1
 
     with client._engine.connect() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             text(
                 "SELECT predicted_priority, confidence FROM predictions "
-                "WHERE ticket_id='T-001' AND model_version='1'"
+                "WHERE ticket_id='T-001' ORDER BY id"
             )
-        ).one()
-    assert row[0] == "urgent"
-    assert row[1] == pytest.approx(0.99)
+        ).all()
+    assert len(rows) == 2
+    # The newest row reflects the re-score input.
+    assert rows[-1][0] == "urgent"
+    assert rows[-1][1] == pytest.approx(0.99)
 
 
 def test_insert_batch_writes_all_fresh_rows(client):
