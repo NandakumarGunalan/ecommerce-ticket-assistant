@@ -36,3 +36,6 @@ synthetic_data/data/
 
 # Training artifacts from smoke-test / local runs
 training/artifacts/
+
+# Playwright MCP screenshots / page snapshots (regenerated on demand)
+.playwright-mcp/
