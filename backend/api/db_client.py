@@ -132,6 +132,18 @@ class DBClient(Protocol):
         can't probe for other users' prediction ids.
         """
 
+    def insert_tickets_pending(
+        self,
+        *,
+        user_id: str,
+        ticket_texts: List[str],
+        source: str = "csv",
+    ) -> int:
+        """Insert multiple tickets with no prediction (batch/pending path).
+
+        Returns the number of rows actually inserted.
+        """
+
     def increment_and_get(
         self, user_id: str, window_start_minute: datetime
     ) -> int:
@@ -339,6 +351,29 @@ class InMemoryDBClient:
             }
             return feedback_id, now
 
+    def insert_tickets_pending(
+        self,
+        *,
+        user_id: str,
+        ticket_texts: List[str],
+        source: str = "csv",
+    ) -> int:
+        with self._lock:
+            count = 0
+            now = datetime.now(timezone.utc)
+            for text in ticket_texts:
+                ticket_id = str(uuid.uuid4())
+                self._tickets[ticket_id] = {
+                    "id": ticket_id,
+                    "user_id": user_id,
+                    "text": text,
+                    "source": source,
+                    "created_at": now,
+                    "resolved_at": None,
+                }
+                count += 1
+            return count
+
     def get_prediction_context(
         self, prediction_id: str
     ) -> Optional[Dict[str, Any]]:
@@ -506,6 +541,39 @@ class PostgresDBClient:
             model_run_id=model_run_id,
             latency_ms=latency_ms,
         )
+
+    def insert_tickets_pending(
+        self,
+        *,
+        user_id: str,
+        ticket_texts: List[str],
+        source: str = "csv",
+    ) -> int:
+        """Insert multiple ticket rows with no prediction (CSV batch path).
+
+        Each ticket gets its own INSERT inside a single transaction. Returns
+        the number of rows inserted. pg8000 doesn't support
+        ``executemany`` returning row counts cleanly, so we use a single
+        ``INSERT ... SELECT`` from an unnest to keep it one round-trip.
+        """
+        if not ticket_texts:
+            return 0
+        sql = self._text(
+            """
+            INSERT INTO tickets (text, source, user_id)
+            SELECT unnest(CAST(:texts AS TEXT[])), :source, :user_id
+            """
+        )
+        with self._engine.begin() as conn:
+            conn.execute(
+                sql,
+                {
+                    "texts": ticket_texts,
+                    "source": source,
+                    "user_id": user_id,
+                },
+            )
+        return len(ticket_texts)
 
     def insert_feedback(
         self,

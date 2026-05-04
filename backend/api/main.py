@@ -19,7 +19,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+import csv
+import io
+
+from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api import config, logging_utils
@@ -32,6 +35,7 @@ from backend.api.db_client import (
 from backend.api.logging_utils import get_logger
 from backend.api.model_client import ModelClient, ModelEndpointError
 from backend.api.schemas import (
+    CsvUploadResponse,
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
@@ -365,6 +369,77 @@ def unresolve_ticket(
         _LOG, event="ticket_unresolved", ticket_id=ticket_id, user_id=user.uid
     )
     return _record_to_schema(record)
+
+
+_CSV_CANDIDATE_COLUMNS = {"text", "message", "description", "ticket", "ticket_text"}
+_CSV_MAX_ROWS = 500
+_CSV_MIN_TEXT_LEN = 5
+
+
+def _parse_csv_texts(raw_bytes: bytes) -> list[str]:
+    """Return non-empty text strings extracted from a CSV upload.
+
+    Column detection order:
+    1. First header column whose lowercase name is in ``_CSV_CANDIDATE_COLUMNS``.
+    2. First column regardless of name (no-header or unknown header).
+
+    Rows whose extracted text is shorter than ``_CSV_MIN_TEXT_LEN`` chars
+    (after stripping) are dropped silently; callers see them in ``skipped``.
+    """
+    text = raw_bytes.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    col: str | None = None
+    texts: list[str] = []
+
+    for row in reader:
+        if col is None:
+            # Determine which column to use on the first row.
+            fieldnames = list(row.keys())
+            for fn in fieldnames:
+                if fn.strip().lower() in _CSV_CANDIDATE_COLUMNS:
+                    col = fn
+                    break
+            if col is None:
+                col = fieldnames[0] if fieldnames else ""
+        value = row.get(col, "").strip()
+        if len(value) >= _CSV_MIN_TEXT_LEN:
+            texts.append(value)
+    return texts
+
+
+@app.post("/tickets/upload-csv", response_model=CsvUploadResponse)
+async def upload_csv(
+    file: UploadFile,
+    db: DBClient = Depends(get_db),
+    user: User = Depends(rate_limited_user),
+) -> CsvUploadResponse:
+    """Accept a CSV file, extract ticket text, persist as pending tickets.
+
+    Tickets inserted here have no prediction yet — they will be scored by
+    the nightly batch job (``distilbert-priority-batch``). They appear in
+    ``GET /tickets`` with ``predicted_priority=null`` until scored.
+
+    Limits: 500 rows max; rows shorter than 5 chars are skipped.
+    """
+    raw = await file.read()
+    all_texts = _parse_csv_texts(raw)
+
+    total_parsed = len(all_texts)
+    texts_to_insert = all_texts[:_CSV_MAX_ROWS]
+    skipped = total_parsed - len(texts_to_insert)
+
+    accepted = db.insert_tickets_pending(
+        user_id=user.uid,
+        ticket_texts=texts_to_insert,
+        source="csv",
+    )
+
+    _LOG.info(
+        "csv_upload",
+        extra={"user_id": user.uid, "accepted": accepted, "skipped": skipped},
+    )
+
+    return CsvUploadResponse(accepted=accepted, skipped=skipped)
 
 
 @app.post("/feedback", response_model=FeedbackResponse)

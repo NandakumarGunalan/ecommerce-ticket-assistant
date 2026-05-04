@@ -2,6 +2,7 @@ fastapi==0.121.0
 uvicorn[standard]==0.32.0
 pydantic==2.9.2
 httpx==0.28.1
+python-multipart==0.0.20
 
 # DB — production path uses Cloud SQL Python Connector + pg8000
 # (no sidecar proxy required on Cloud Run). The plan mentions psycopg as

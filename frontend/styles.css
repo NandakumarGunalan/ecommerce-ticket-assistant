@@ -190,6 +190,7 @@ h2 {
   align-items: start;
 }
 
+.composer-column,
 .composer,
 .result-area {
   min-width: 0;
@@ -719,6 +720,53 @@ dd {
   transform: translateY(-6px);
 }
 
+/* ---------- CSV upload drop zone ---------- */
+.csv-upload-area {
+  margin-top: 28px;
+  padding: 22px 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  cursor: default;
+}
+
+.csv-drop-zone--over {
+  border-color: var(--accent);
+  background: rgba(110, 231, 216, 0.07);
+}
+
+.csv-drop-title {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 650;
+}
+
+.csv-drop-sub {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.csv-drop-hint {
+  margin: 0;
+  color: var(--faint);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+/* ---------- Pending tickets ---------- */
+.ticket-item--pending {
+  opacity: 0.75;
+}
+
+.priority-chip--pending {
+  color: var(--faint);
+  border-color: var(--faint);
+}
+
 @media (max-width: 860px) {
   .page {
     width: min(100% - 24px, 720px);
@@ -728,6 +776,10 @@ dd {
   .masthead,
   .workspace {
     grid-template-columns: 1fr;
+  }
+
+  .csv-upload-area {
+    margin-top: 20px;
   }
 
   .masthead {

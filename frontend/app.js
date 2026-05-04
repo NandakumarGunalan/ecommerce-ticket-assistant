@@ -40,6 +40,12 @@ const ticketList = document.querySelector("#ticket-list");
 const ticketsEmpty = document.querySelector("#tickets-empty");
 const refreshTicketsButton = document.querySelector("#refresh-tickets-button");
 const showResolvedToggle = document.querySelector("#show-resolved-toggle");
+const showPendingToggle = document.querySelector("#show-pending-toggle");
+const csvDropZone = document.querySelector("#csv-drop-zone");
+const csvFileInput = document.querySelector("#csv-file-input");
+const csvBrowseBtn = document.querySelector("#csv-browse-btn");
+const csvDropInner = document.querySelector("#csv-drop-inner");
+const csvUploading = document.querySelector("#csv-uploading");
 
 const priorityClasses = ["low", "medium", "high", "urgent", "unknown"];
 
@@ -48,6 +54,7 @@ let cachedTickets = [];
 let currentUser = null;
 let appBooted = false;
 let showResolved = false;
+let showPending = true;
 
 // ---------- Mock state ----------
 const mockTickets = [
@@ -297,11 +304,12 @@ async function apiCreateTicket(ticketText) {
 
 async function apiListTickets(limit = 50) {
   if (useMockApi) {
-    const list = showResolved
-      ? [...mockTickets]
-      : mockTickets.filter((t) => !t.resolved_at);
+    let list = [...mockTickets];
+    if (!showResolved) list = list.filter((t) => !t.resolved_at);
     return list.slice(0, limit);
   }
+  // Always fetch with include_resolved reflecting the toggle; pending tickets
+  // (no prediction_id) are always included server-side and filtered client-side.
   const response = await authedFetch(
     `/tickets?limit=${limit}&include_resolved=${showResolved ? "true" : "false"}`,
   );
@@ -348,6 +356,25 @@ async function apiSendFeedback(predictionId, verdict) {
     body: JSON.stringify({ prediction_id: predictionId, verdict }),
   });
   if (!response.ok) throw new Error(`Feedback failed with ${response.status}`);
+  return response.json();
+}
+
+async function apiUploadCsv(file) {
+  if (useMockApi) {
+    await new Promise((r) => setTimeout(r, 600));
+    return { accepted: 12, skipped: 1 };
+  }
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await authedFetch("/tickets/upload-csv", {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    let detail = "";
+    try { detail = JSON.stringify(await response.json()); } catch (_) { /* ignore */ }
+    throw new Error(`CSV upload failed with ${response.status}${detail ? `: ${detail}` : ""}`);
+  }
   return response.json();
 }
 
@@ -402,34 +429,43 @@ function renderError(message) {
   feedbackRow.hidden = true;
 }
 
-function renderTickets(tickets) {
-  cachedTickets = tickets;
-  ticketCount.textContent = String(tickets.length);
-  ticketsEmpty.classList.toggle("hidden", tickets.length > 0);
-  ticketList.innerHTML = "";
+function buildTicketItem(t) {
+  const isPending = !t.prediction_id;
+  const priority = isPending ? "pending" : normalizePriority(t.predicted_priority);
+  const isResolved = Boolean(t.resolved_at);
 
-  tickets.forEach((t) => {
-    const priority = normalizePriority(t.predicted_priority);
-    const isResolved = Boolean(t.resolved_at);
-    const item = document.createElement("article");
-    item.className = `ticket-item ticket-item--${priority}`;
-    if (isResolved) item.classList.add("ticket-item--resolved");
-    item.dataset.predictionId = t.prediction_id || "";
-    item.dataset.ticketId = t.ticket_id || "";
+  const item = document.createElement("article");
+  item.className = isPending
+    ? "ticket-item ticket-item--pending"
+    : `ticket-item ticket-item--${priority}`;
+  if (isResolved) item.classList.add("ticket-item--resolved");
+  item.dataset.predictionId = t.prediction_id || "";
+  item.dataset.ticketId = t.ticket_id || "";
 
-    const text = t.ticket_text || t.text || "";
+  const text = t.ticket_text || t.text || "";
+  const textBlock = text
+    ? `<p class="ticket-item__text">${escapeHtml(truncateText(text, 200))}</p>`
+    : `<p class="ticket-item__text ticket-item__text--empty">(no ticket text)</p>`;
+
+  const resolvedBadge = isResolved ? `<span class="resolved-badge">Resolved</span>` : "";
+  const resolveLabel = isResolved ? "Reopen" : "Resolve";
+
+  if (isPending) {
+    item.innerHTML = `
+      <div class="ticket-item__meta">
+        <span class="priority-chip priority-chip--pending">Pending</span>
+        ${resolvedBadge}
+        <span>${escapeHtml(shortDate(t.created_at))}</span>
+      </div>
+      ${textBlock}
+      <div class="ticket-item__footer">
+        <span>Awaiting overnight batch scoring</span>
+      </div>
+    `;
+  } else {
     const confPct =
       typeof t.confidence === "number" ? `${Math.round(t.confidence * 100)}% confidence` : "--";
     const modelLabel = t.model_version ? `v${t.model_version}` : "unknown model";
-    const textBlock = text
-      ? `<p class="ticket-item__text">${escapeHtml(truncateText(text, 200))}</p>`
-      : `<p class="ticket-item__text ticket-item__text--empty">(no ticket text)</p>`;
-
-    const resolvedBadge = isResolved
-      ? `<span class="resolved-badge">Resolved</span>`
-      : "";
-    const resolveLabel = isResolved ? "Reopen" : "Resolve";
-
     item.innerHTML = `
       <div class="ticket-item__meta">
         <span class="priority-chip">${formatPriority(priority)}</span>
@@ -492,9 +528,25 @@ function renderTickets(tickets) {
         }
       });
     }
+  }
 
-    ticketList.appendChild(item);
-  });
+  return item;
+}
+
+function renderTickets(tickets) {
+  cachedTickets = tickets;
+
+  const classified = tickets.filter((t) => t.prediction_id);
+  const pending = tickets.filter((t) => !t.prediction_id);
+  const visiblePending = showPending ? pending : [];
+  const total = classified.length + visiblePending.length;
+
+  ticketCount.textContent = String(classified.length + pending.length);
+  ticketsEmpty.classList.toggle("hidden", total > 0);
+  ticketList.innerHTML = "";
+
+  classified.forEach((t) => ticketList.appendChild(buildTicketItem(t)));
+  visiblePending.forEach((t) => ticketList.appendChild(buildTicketItem(t)));
 }
 
 // ---------- Flow ----------
@@ -735,6 +787,63 @@ if (showResolvedToggle) {
   showResolvedToggle.addEventListener("change", () => {
     showResolved = Boolean(showResolvedToggle.checked);
     refreshTickets();
+  });
+}
+
+if (showPendingToggle) {
+  showPendingToggle.addEventListener("change", () => {
+    showPending = Boolean(showPendingToggle.checked);
+    renderTickets(cachedTickets);
+  });
+}
+
+// ---------- CSV upload ----------
+async function handleCsvFile(file) {
+  if (!file) return;
+  if (csvDropInner) csvDropInner.classList.add("hidden");
+  if (csvUploading) csvUploading.classList.remove("hidden");
+  try {
+    const result = await apiUploadCsv(file);
+    const msg = result.skipped > 0
+      ? `Uploaded ${result.accepted} ticket${result.accepted !== 1 ? "s" : ""} — ${result.skipped} row${result.skipped !== 1 ? "s" : ""} skipped. They'll be scored overnight.`
+      : `Uploaded ${result.accepted} ticket${result.accepted !== 1 ? "s" : ""}. They'll be scored overnight by the batch job.`;
+    showToast(msg, "info", 7000);
+    switchView("tickets");
+    await refreshTickets();
+  } catch (err) {
+    console.warn("CSV upload failed", err);
+    showToast(`Upload failed: ${err.message}`, "danger");
+  } finally {
+    if (csvDropInner) csvDropInner.classList.remove("hidden");
+    if (csvUploading) csvUploading.classList.add("hidden");
+    if (csvFileInput) csvFileInput.value = "";
+  }
+}
+
+if (csvBrowseBtn) {
+  csvBrowseBtn.addEventListener("click", () => csvFileInput && csvFileInput.click());
+}
+
+if (csvFileInput) {
+  csvFileInput.addEventListener("change", () => {
+    const file = csvFileInput.files && csvFileInput.files[0];
+    if (file) handleCsvFile(file);
+  });
+}
+
+if (csvDropZone) {
+  csvDropZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    csvDropZone.classList.add("csv-drop-zone--over");
+  });
+  csvDropZone.addEventListener("dragleave", () => {
+    csvDropZone.classList.remove("csv-drop-zone--over");
+  });
+  csvDropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    csvDropZone.classList.remove("csv-drop-zone--over");
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) handleCsvFile(file);
   });
 }
 
