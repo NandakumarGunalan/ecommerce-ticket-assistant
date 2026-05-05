@@ -649,24 +649,30 @@ async function onSignedIn(user) {
     appBooted = true;
     updateCharacterCount();
   }
-  // Confirm token/session with backend /me, then run initial loads. Note:
-  // authedFetch now force-refreshes the token and retries once on the first
-  // 401 before giving up. If /me still fails after that, authedFetch has
-  // already shown a visible banner + signed the user out, so we just bail.
-  try {
-    if (!useMockApi) {
+  // Best-effort confirm with /me (purely cosmetic — sets the displayed
+  // email from the verified token claims). On a cold backend this can
+  // 502 transiently; do NOT bail in that case or refreshTickets never
+  // runs and the user is stuck on "Loading tickets…" until they hit
+  // Refresh manually. authedFetch already handles the auth-failure path
+  // (401 → token refresh → if still 401, sign out + show banner).
+  if (!useMockApi) {
+    try {
       const me = await apiMe();
       if (me && (me.display_name || me.email) && userEmailEl) {
         userEmailEl.textContent = me.email || me.display_name;
       }
+    } catch (err) {
+      // unauthorized was already handled by authedFetch (banner +
+      // signOut); for any other failure (502 cold start, network blip)
+      // just log and continue — tickets are the main thing.
+      console.warn("/me check failed (continuing anyway)", err);
     }
-  } catch (err) {
-    console.warn("/me check failed", err);
-    return;
   }
 
-  await checkHealth();
-  await refreshTickets();
+  // Run checkHealth and refreshTickets in parallel — checkHealth can take
+  // several seconds when the model endpoint is also cold, and there's no
+  // reason to block ticket loading on it.
+  await Promise.all([checkHealth(), refreshTickets()]);
 }
 
 function onSignedOut() {
