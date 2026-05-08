@@ -58,6 +58,19 @@ def test_upload_csv_respects_500_row_limit(client, db, stub_user):
     assert body["skipped"] == 100
 
 
+def test_upload_csv_skips_overlong_rows(client, db, stub_user):
+    from backend.api.config import TICKET_TEXT_MAX_CHARS
+
+    long_row = "x" * (TICKET_TEXT_MAX_CHARS + 1)
+    at_limit = "y" * TICKET_TEXT_MAX_CHARS
+    csv = f"text\n{long_row}\n{at_limit}\nshort but valid ticket\n"
+    r = client.post("/tickets/upload-csv", files=_csv_file(csv))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["accepted"] == 2
+    assert body["skipped"] == 0
+
+
 def test_upload_csv_empty_file(client, db, stub_user):
     r = client.post("/tickets/upload-csv", files=_csv_file("text\n"))
     assert r.status_code == 200
