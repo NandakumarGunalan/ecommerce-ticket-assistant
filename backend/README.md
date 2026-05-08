@@ -31,7 +31,7 @@ req/min/user rate limit.
 | GET    | `/me`                                         | `{uid, email, display_name}` from the verified token.                |
 | POST   | `/predict`                                    | Stateless score — no DB write.                                       |
 | POST   | `/tickets`                                    | Score + INSERT ticket + INSERT prediction, scoped to `user.uid`.     |
-| POST   | `/tickets/upload-csv`                         | Multipart `file` (CSV); inserts ≤500 pending tickets (`source='csv'`) for the caller; returns `{accepted, skipped}`. Skips rows with text < 5 chars. Picks column `text`/`message`/`description`/`ticket`/`ticket_text` (case-insensitive), else first column. |
+| POST   | `/tickets/upload-csv`                         | Multipart `file` (CSV); inserts ≤500 pending tickets (`source='csv'`) for the caller; returns `{accepted, skipped}`. Skips rows with text < 5 chars or > 10,000 chars. Picks column `text`/`message`/`description`/`ticket`/`ticket_text` (case-insensitive), else first column. |
 | GET    | `/tickets?limit=50&include_resolved=false`    | Caller's tickets only, sorted by priority rank.                      |
 | POST   | `/tickets/{id}/resolve`                       | Mark the ticket resolved (owner-only).                               |
 | POST   | `/tickets/{id}/unresolve`                     | Clear `resolved_at`.                                                 |

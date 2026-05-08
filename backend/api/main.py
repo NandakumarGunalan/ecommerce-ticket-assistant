@@ -403,7 +403,7 @@ def _parse_csv_texts(raw_bytes: bytes) -> list[str]:
             if col is None:
                 col = fieldnames[0] if fieldnames else ""
         value = row.get(col, "").strip()
-        if len(value) >= _CSV_MIN_TEXT_LEN:
+        if _CSV_MIN_TEXT_LEN <= len(value) <= config.TICKET_TEXT_MAX_CHARS:
             texts.append(value)
     return texts
 
@@ -420,7 +420,8 @@ async def upload_csv(
     the nightly batch job (``distilbert-priority-batch``). They appear in
     ``GET /tickets`` with ``predicted_priority=null`` until scored.
 
-    Limits: 500 rows max; rows shorter than 5 chars are skipped.
+    Limits: 500 rows max; rows shorter than 5 chars or longer than
+    ``TICKET_TEXT_MAX_CHARS`` are skipped.
     """
     raw = await file.read()
     all_texts = _parse_csv_texts(raw)
