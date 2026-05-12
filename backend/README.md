@@ -131,7 +131,7 @@ gcloud run deploy ticket-backend-api \
   --add-cloudsql-instances=msds-603-victors-demons:us-central1:ticket-assistant-db \
   --cpu=1 --memory=512Mi \
   --min-instances=0 --max-instances=5 \
-  --concurrency=20 --timeout=30s \
+  --concurrency=4 --timeout=60s \
   --project=msds-603-victors-demons
 ```
 

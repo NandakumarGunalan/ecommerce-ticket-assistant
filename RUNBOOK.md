@@ -142,7 +142,7 @@ gcloud run deploy ticket-backend-api \
   --set-env-vars="MODEL_ENDPOINT_URL=$MODEL_URL,DB_INSTANCE=msds-603-victors-demons:us-central1:ticket-assistant-db,DB_NAME=ticket_assistant,DB_USER=app_user,DB_PASSWORD_SECRET=ticket-assistant-db-app-password,GCP_PROJECT=msds-603-victors-demons" \
   --add-cloudsql-instances=msds-603-victors-demons:us-central1:ticket-assistant-db \
   --cpu=1 --memory=512Mi --min-instances=0 --max-instances=5 \
-  --concurrency=20 --timeout=30s \
+  --concurrency=4 --timeout=60s \
   --project=msds-603-victors-demons
 ```
 
