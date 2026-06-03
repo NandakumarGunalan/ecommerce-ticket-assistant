@@ -59,7 +59,7 @@ jobs:
           id_token_audience: ${{ secrets.INFERENCE_URL }}
           id_token_include_email: true
 
-      - name: Hit /predict and assert response shape
+      - name: Warm up endpoint, then hit /predict and assert response shape
         if: steps.secrets.outputs.skip == 'false'
         env:
           INFERENCE_URL: ${{ secrets.INFERENCE_URL }}
@@ -67,12 +67,40 @@ jobs:
         run: |
           set -euo pipefail
 
+          AUTH=(-H "Authorization: Bearer $ID_TOKEN")
+
+          # The service runs at min-instances=0, so a daily cron run always
+          # hits a cold start: container boot + heavy ML imports + model load
+          # take ~70s end-to-end. A single 60s request can't outlast that, so
+          # we first poll /health (which returns 200 only once the model is
+          # loaded) with a generous per-request budget and retries. This
+          # absorbs the cold start; the /predict assertion below then runs
+          # against a warm instance and returns in ~1s. We still surface a hard
+          # failure if the endpoint never becomes healthy.
+          echo "Warming up $INFERENCE_URL (cold start can take ~70s)..."
+          warm=false
+          for attempt in $(seq 1 6); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              "${AUTH[@]}" --max-time 90 "$INFERENCE_URL/health" || echo "000")
+            echo "  attempt $attempt: /health -> $code"
+            if [[ "$code" == "200" ]]; then
+              warm=true
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$warm" != "true" ]]; then
+            echo "::error::endpoint did not become healthy after warm-up attempts"
+            exit 1
+          fi
+
+          # Endpoint is warm now; this should respond in ~1s.
           PAYLOAD='{"ticket_text":"Customer cannot complete checkout due to payment timeout."}'
           BODY=$(curl -sS --fail-with-body \
-            -H "Authorization: Bearer $ID_TOKEN" \
+            "${AUTH[@]}" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" \
-            --max-time 60 \
+            --max-time 30 \
             "$INFERENCE_URL/predict")
 
           echo "Response: $BODY"
