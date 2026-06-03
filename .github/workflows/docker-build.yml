@@ -26,7 +26,7 @@ jobs:
           - name: training
             dockerfile: training/Dockerfile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check if service changed
         id: changed
         uses: tj-actions/changed-files@v45
